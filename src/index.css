@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background: #0f172a; 
+  color: white;
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Background Image with Glowing Overlay */
+.bg-command-center {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: url('https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2072');
+  background-size: cover;
+  background-position: center;
+  opacity: 0.15;
+}
+
+.glass {
+  @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl;
+}
+
+.clay {
+  @apply rounded-[2rem] bg-white/5 border border-white/10 transition-all duration-300;
+  box-shadow: inset 2px 2px 10px rgba(255,255,255,0.05), 5px 5px 15px rgba(0,0,0,0.5);
+}
+
+/* Neon Borders for Card Status */
+.border-new { border-bottom: 4px solid #3b82f6; box-shadow: 0 10px 20px -10px #3b82f6; }
+.border-progress { border-bottom: 4px solid #f59e0b; box-shadow: 0 10px 20px -10px #f59e0b; }
+.border-closed { border-bottom: 4px solid #10b981; box-shadow: 0 10px 20px -10px #10b981; }
+.border-total { border-bottom: 4px solid #8b5cf6; box-shadow: 0 10px 20px -10px #8b5cf6; }
+
+.custom-scrollbar::-webkit-scrollbar { width: 5px; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
