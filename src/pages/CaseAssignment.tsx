@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../services/api';
 import { useAuthStore } from '@/stores/authStore';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 import { UserCheck, UserMinus, Search, Filter, FileText, ChevronRight } from 'lucide-react';
 import { listDocuments } from '../services/Document';
 
@@ -22,6 +23,7 @@ interface CaseAssignmentData {
 const CaseAssignment = () => {
   const navigate = useNavigate();
   const { hasRole } = useAuthStore() as any;
+  const { language } = usePreferencesStore();
   const canEditAssignment = hasRole('Supervisor') || hasRole('Admin');
 
   const [assignments, setAssignments] = useState<CaseAssignmentData[]>([]);
@@ -34,6 +36,7 @@ const CaseAssignment = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'assigned' | 'unassigned' | 'documents'>('assigned');
   const [searchParams] = useSearchParams();
+  const usersForbiddenRef = useRef(false);
 
   // Initialize from localStorage
   const getInitialPending = () => {
@@ -41,6 +44,17 @@ const CaseAssignment = () => {
         const saved = localStorage.getItem('supervisor_pending_assignments');
         return saved ? JSON.parse(saved) : [];
     } catch (e) { return []; }
+  };
+
+  const safeReadArray = (key: string) => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   };
 
   useEffect(() => {
@@ -59,41 +73,95 @@ const CaseAssignment = () => {
         const [assignedRes, casesRes, usersRes, documentsRes] = await Promise.allSettled([
           api.get('/assignedcases'),
           api.get('/cases'),
-          api.get('/users'),
+          usersForbiddenRef.current ? Promise.resolve({ data: [] }) : api.get('/users'),
           listDocuments(),
         ]);
 
         // 1. Process Users First (for name mapping)
         const localUserMap: Record<string, string> = {};
-        const rawUsers = usersRes.status === 'fulfilled' && Array.isArray(usersRes.value.data) ? usersRes.value.data : [];
-        rawUsers.forEach((u: any) => {
-             const full = u.name || [u.firstName, u.lastName].filter(Boolean).join(' ').trim();
-             localUserMap[u.userId] = full || u.username || u.userId;
+        const rawUsers =
+          usersRes.status === 'fulfilled' && Array.isArray(usersRes.value.data)
+            ? usersRes.value.data
+            : safeReadArray('cached_users');
+        if (
+          usersRes.status === 'rejected' &&
+          (usersRes as any).reason?.response?.status === 403
+        ) {
+          usersForbiddenRef.current = true;
+        }
+        const normalizedUsers = rawUsers
+          .map((u: any) => {
+            const userId = u.userId || u.userID || u.id || u._id || u.username;
+            const username = u.username || u.userName || u.name || userId;
+            const full = u.name || [u.firstName, u.lastName].filter(Boolean).join(' ').trim();
+            return { ...u, userId: String(userId || '').trim(), username: String(username || '').trim(), name: full || String(username || '').trim() };
+          })
+          .filter((u: any) => !!u.userId);
+
+        normalizedUsers.forEach((u: any) => {
+          const full = u.name || u.username || u.userId;
+          localUserMap[u.userId] = full;
+          if (u.username) {
+            localUserMap[String(u.username)] = full;
+            localUserMap[String(u.username).toLowerCase()] = full;
+          }
         });
-        setUsers(rawUsers);
+        setUsers(normalizedUsers);
+        if (usersRes.status === 'fulfilled') {
+          localStorage.setItem('cached_users', JSON.stringify(normalizedUsers));
+        }
 
         // 2. Process Assignments & Merge Pending
-        let rawAssignments: CaseAssignmentData[] = [];
-        if (assignedRes.status === 'fulfilled' && Array.isArray(assignedRes.value.data)) {
-            rawAssignments = assignedRes.value.data;
-        }
+        const rawAssignmentsSource =
+          assignedRes.status === 'fulfilled' && Array.isArray(assignedRes.value.data)
+            ? assignedRes.value.data
+            : safeReadArray('cached_assignments');
+
+        const normalizedAssignments: CaseAssignmentData[] = (Array.isArray(rawAssignmentsSource) ? rawAssignmentsSource : [])
+          .map((a: any, idx: number) => {
+            const caseId = a.caseId || a.case_id || a.caseID || a.id || a._id;
+            const userId = a.userId || a.user_id || a.userID || a.investigatorId;
+            const assignmentIdRaw = a.assignmentId || a.assignment_id || a.id || a._id;
+            const assignmentId = Number(assignmentIdRaw) || Date.now() + idx;
+            const userName =
+              a.userName ||
+              a.username ||
+              a.investigatorName ||
+              localUserMap[String(userId || '').trim()] ||
+              String(userId || '').trim();
+
+            return {
+              assignmentId,
+              caseId: String(caseId || '').trim(),
+              userId: String(userId || '').trim(),
+              userName: String(userName || '').trim(),
+              assignedDate: String(a.assignedDate || a.assigned_date || a.timestamp || a.assignedAt || ''),
+              fullName: String(a.fullName || a.name || ''),
+              partyId: String(a.partyId || a.party_id || ''),
+              partyType: String(a.partyType || a.party_type || ''),
+              phoneNumber: String(a.phoneNumber || a.phone_number || ''),
+              updateDetails: String(a.updateDetails || a.update_details || ''),
+              lastEntryDate: String(a.lastEntryDate || a.last_entry_date || ''),
+            };
+          })
+          .filter(a => !!a.caseId && !!a.userId);
 
         // Merge Pending Assignments
         const pending = getInitialPending();
-        const mergedAssignments = [...rawAssignments];
+        const mergedAssignments = [...normalizedAssignments];
         
         pending.forEach((p: any) => {
-            const exists = rawAssignments.some((a: any) => 
-                String(a.caseId).toLowerCase() === String(p.caseId).toLowerCase() && 
-                a.userId === p.userId
+            const exists = mergedAssignments.some((a: any) =>
+              String(a.caseId || '').toLowerCase() === String(p.caseId || '').toLowerCase() &&
+              String(a.userId || '') === String(p.userId || '')
             );
             if (!exists) {
                 // Map to CaseAssignmentData structure
                 mergedAssignments.push({
                     assignmentId: p.assignmentId || Date.now(), // Temporary ID
-                    caseId: p.caseId,
-                    userId: p.userId,
-                    userName: localUserMap[p.userId] || p.userId,
+                    caseId: String(p.caseId || '').trim(),
+                    userId: String(p.userId || '').trim(),
+                    userName: localUserMap[String(p.userId || '').trim()] || String(p.userId || '').trim(),
                     assignedDate: new Date(p.timestamp || Date.now()).toISOString(),
                     fullName: 'Pending Sync...', // Placeholder
                     partyId: '',
@@ -105,16 +173,39 @@ const CaseAssignment = () => {
             }
         });
         setAssignments(mergedAssignments);
+        if (assignedRes.status === 'fulfilled') {
+          localStorage.setItem('cached_assignments', JSON.stringify(mergedAssignments));
+        }
 
         // 3. Process Cases & Orphan Recovery
-        let rawCases = casesRes.status === 'fulfilled' && Array.isArray(casesRes.value.data) ? casesRes.value.data : [];
-        const existingCaseIds = new Set(rawCases.map((c: any) => c.caseId));
+        let rawCasesSource =
+          casesRes.status === 'fulfilled' && Array.isArray(casesRes.value.data)
+            ? casesRes.value.data
+            : safeReadArray('cached_cases');
+        if (!Array.isArray(rawCasesSource)) rawCasesSource = [];
+
+        let rawCases = rawCasesSource
+          .map((c: any) => {
+            const caseId = c.caseId || c.case_id || c.id || c._id || c.uuid;
+            return { ...c, caseId: String(caseId || '').trim() };
+          })
+          .filter((c: any) => !!c.caseId);
+
+        const existingCaseIds = new Set(rawCases.map((c: any) => String(c.caseId || '').trim()));
         
         // Find assignments that point to cases we don't have
-        const missingIds = [...new Set(mergedAssignments
-            .map(a => a.caseId)
-            .filter(id => id && !existingCaseIds.has(id))
-        )]
+        const missingIds = [
+          ...new Set(
+            mergedAssignments
+              .map(a => String(a.caseId || '').trim())
+              .filter(id => id && !existingCaseIds.has(id))
+          ),
+        ].filter(id => {
+          const strId = String(id);
+          if (!strId) return false;
+          if (strId === 'null' || strId === 'undefined') return false;
+          return true;
+        });
 
         if (missingIds.length > 0) {
              console.log(`Recovering ${missingIds.length} orphan cases...`);
@@ -124,13 +215,20 @@ const CaseAssignment = () => {
              const recovered = recoveredResults
                 .filter(r => r.status === 'fulfilled')
                 .map((r: any) => r.value.data)
-                .filter(c => c && c.caseId);
+                .map((c: any) => {
+                  const caseId = c?.caseId || c?.case_id || c?.id || c?._id || c?.uuid;
+                  return { ...c, caseId: String(caseId || '').trim() };
+                })
+                .filter((c: any) => c && c.caseId);
              
              if (recovered.length > 0) {
                  rawCases = [...rawCases, ...recovered];
              }
         }
         setCases(rawCases);
+        if (casesRes.status === 'fulfilled') {
+          localStorage.setItem('cached_cases', JSON.stringify(rawCases));
+        }
 
         // 4. Process Documents
         const rawDocuments = documentsRes.status === 'fulfilled' ? documentsRes.value : [];
@@ -176,9 +274,9 @@ const CaseAssignment = () => {
       });
       setAssignments(prev => prev.map(c => c.assignmentId === id ? { ...editFormData } : c));
       setEditingId(null);
-      alert("SYSTEM UPDATE SUCCESSFUL");
+      alert(t(language, 'caseUpdatedSuccessfully'));
     } catch (error) {
-      alert("SYSTEM ERROR: Assignment synchronization failed.");
+      alert(t(language, 'systemUplinkFailed'));
     }
   };
 
@@ -187,16 +285,17 @@ const CaseAssignment = () => {
       const investigatorName =
         item.userName || userById[item.userId] || item.userId || '';
       const needle = searchTerm.toLowerCase();
+      const caseId = String(item.caseId || '').toLowerCase();
       return (
-        item.caseId.toLowerCase().includes(needle) ||
+        caseId.includes(needle) ||
         investigatorName.toLowerCase().includes(needle)
       );
     });
   }, [assignments, searchTerm, userById]);
 
   const unassignedCases = useMemo(() => {
-    const assignedIds = new Set(assignments.map(a => a.caseId));
-    return cases.filter(c => !assignedIds.has(c.caseId));
+    const assignedIds = new Set(assignments.map(a => String(a.caseId || '').trim()).filter(Boolean));
+    return cases.filter(c => !assignedIds.has(String(c.caseId || '').trim()));
   }, [cases, assignments]);
 
   const filteredUnassigned = useMemo(() => {
@@ -225,26 +324,32 @@ const CaseAssignment = () => {
       const needle = searchTerm.toLowerCase();
       return (
         String(doc.caseId).toLowerCase().includes(needle) ||
-        String(doc.file_name).toLowerCase().includes(needle) ||
+        String(doc.file_name || doc.fileName || '').toLowerCase().includes(needle) ||
         String(doc.typeOfDocument).toLowerCase().includes(needle)
       );
     });
   }, [documents, searchTerm]);
 
-  if (isLoading) return <div className="p-10 text-blue-500 font-black animate-pulse uppercase">Syncing Neural Registry...</div>;
+  if (isLoading) return <div className="p-10 text-blue-500 font-black animate-pulse uppercase">{t(language, 'syncing')}</div>;
 
   return (
-    <div className="p-8 space-y-10 bg-[#06080f] min-h-screen text-white">
+    <div className="p-8 space-y-10 bg-[color:var(--pcrs-bg)] min-h-screen text-[color:var(--pcrs-text)]">
       
       {/* HEADER SECTION */}
       <div className="flex flex-col gap-6 border-b border-white/5 pb-8">
         <div className="flex flex-col md:flex-row justify-between items-center gap-6">
           <div>
             <h2 className="text-5xl font-black italic uppercase tracking-tighter">
-              Personnel <span className="text-blue-600">Deployment</span>
+              {language === 'en' ? (
+                <>
+                  Personnel <span className="text-blue-600">Deployment</span>
+                </>
+              ) : (
+                <span className="text-blue-600">{t(language, 'personnelDeployment')}</span>
+              )}
             </h2>
             <p className="text-[10px] text-gray-500 font-bold uppercase tracking-[0.3em] mt-2">
-              System Registry • {viewMode === 'assigned' ? 'Active Deployments' : 'Pending Assignments'}
+              {t(language, 'systemRegistry')} • {viewMode === 'assigned' ? t(language, 'activeDeployments') : t(language, 'pendingAssignments')}
             </p>
           </div>
 
@@ -258,7 +363,7 @@ const CaseAssignment = () => {
                       : 'text-gray-500 hover:text-white hover:bg-white/5'
                   }`}
                 >
-                  Assigned ({assignments.length})
+                  {t(language, 'assigned')} ({assignments.length})
                 </button>
                 <button
                   onClick={() => setViewMode('unassigned')}
@@ -268,7 +373,7 @@ const CaseAssignment = () => {
                       : 'text-gray-500 hover:text-white hover:bg-white/5'
                   }`}
                 >
-                  Unassigned ({unassignedCases.length})
+                  {t(language, 'unassigned')} ({unassignedCases.length})
                 </button>
                 <button
                   onClick={() => setViewMode('documents')}
@@ -278,7 +383,7 @@ const CaseAssignment = () => {
                       : 'text-gray-500 hover:text-white hover:bg-white/5'
                   }`}
                 >
-                  Documents ({documents.length})
+                  {t(language, 'documents')} ({documents.length})
                 </button>
              </div>
           </div>
@@ -290,9 +395,9 @@ const CaseAssignment = () => {
              <input 
                type="text"
                placeholder={
-                 viewMode === 'assigned' ? "SEARCH ASSIGNMENTS..." : 
-                 viewMode === 'unassigned' ? "SEARCH UNASSIGNED CASES..." : 
-                 "SEARCH DOCUMENTS..."
+                 viewMode === 'assigned' ? t(language, 'searchAssignmentsPlaceholder') : 
+                 viewMode === 'unassigned' ? t(language, 'searchUnassignedCasesPlaceholder') : 
+                 t(language, 'searchDocumentsPlaceholder')
                }
                className="bg-transparent border-none outline-none text-[10px] font-black uppercase w-full text-white placeholder-gray-600"
                value={searchTerm}
@@ -304,7 +409,7 @@ const CaseAssignment = () => {
              onClick={() => navigate('/assign-new')} 
              className="bg-blue-600 hover:bg-blue-500 px-8 py-3 rounded-xl text-[10px] font-black uppercase italic shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2"
            >
-             <Filter size={14} /> Assign New
+             <Filter size={14} /> {t(language, 'assignNew')}
            </button>
         </div>
       </div>
@@ -318,10 +423,10 @@ const CaseAssignment = () => {
                 const caseInfo = caseById[item.caseId] || {};
                 const investigatorName =
                   item.userName || userById[item.userId] || item.userId;
-                const title = caseInfo.title || 'Active Operation';
-                const status = caseInfo.currentStatus || 'Unknown';
-                const location = caseInfo.location || 'Unknown';
-                const caseType = caseInfo.caseType || 'Unspecified';
+                const title = caseInfo.title || t(language, 'activeOperation');
+                const status = caseInfo.currentStatus || t(language, 'unknown');
+                const location = caseInfo.location || t(language, 'unknown');
+                const caseType = caseInfo.caseType || t(language, 'notSpecified');
                 return (
                   <>
                     <div className="flex justify-between items-start mb-8">
@@ -334,21 +439,21 @@ const CaseAssignment = () => {
                             {title}
                           </h3>
                           <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.25em]">
-                            Status: {status}
+                            {t(language, 'statusLabel')}: {status}
                           </p>
                           <div className="flex flex-wrap gap-3 text-[9px] font-bold uppercase text-gray-500">
-                            <span>Loc: <span className="text-gray-300">{location}</span></span>
+                            <span>{t(language, 'locLabel')}: <span className="text-gray-300">{location}</span></span>
                             <span className="w-1 h-1 bg-gray-600 rounded-full" />
-                            <span>Type: <span className="text-gray-300">{caseType}</span></span>
+                            <span>{t(language, 'typeLabel')}: <span className="text-gray-300">{caseType}</span></span>
                           </div>
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-[9px] text-gray-500 font-black uppercase">Lead Investigator</p>
+                        <p className="text-[9px] text-gray-500 font-black uppercase">{t(language, 'leadInvestigator')}</p>
                         <p className="text-blue-400 text-lg font-black uppercase italic">{investigatorName}</p>
                         <div className="flex items-center justify-end gap-1 mt-1">
                            <UserCheck size={12} className="text-emerald-500" />
-                           <p className="text-[9px] text-emerald-500 font-black uppercase">Deployed</p>
+                           <p className="text-[9px] text-emerald-500 font-black uppercase">{t(language, 'deployedStatus')}</p>
                         </div>
                       </div>
                     </div>
@@ -356,17 +461,17 @@ const CaseAssignment = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div className="bg-black/30 p-6 rounded-[2rem] border border-white/5">
                         <label className="text-[9px] text-emerald-500 font-black uppercase tracking-widest block mb-2">
-                          {item.partyType || 'Subject'}
+                          {item.partyType || t(language, 'subjectIdentification')}
                         </label>
                         <p className="text-xl font-bold uppercase">{item.fullName}</p>
                         <p className="text-[10px] text-gray-500 font-mono mt-1">
-                          {item.phoneNumber || 'No contact number recorded'}
+                          {item.phoneNumber || t(language, 'noContactNumber')}
                         </p>
                       </div>
 
                       <div className="bg-black/30 p-6 rounded-[2rem] border border-white/5">
                         <label className="text-[9px] text-blue-500 font-black uppercase tracking-widest block mb-2">
-                          Investigator & Notes
+                          {t(language, 'investigatorNotes')}
                         </label>
                         <p className="text-sm font-bold text-white uppercase mb-3">
                           {investigatorName}
@@ -381,7 +486,7 @@ const CaseAssignment = () => {
                           />
                         ) : (
                           <p className="text-[11px] text-gray-400 leading-relaxed italic line-clamp-3">
-                            "{item.updateDetails || 'No recent activity logs recorded.'}"
+                            "{item.updateDetails || t(language, 'noRecentActivityLogs')}"
                           </p>
                         )}
                       </div>
@@ -391,18 +496,18 @@ const CaseAssignment = () => {
                       <div className="flex gap-4">
                         {canEditAssignment && (
                           editingId === item.assignmentId ? (
-                            <button onClick={() => saveChanges(item.assignmentId)} className="bg-emerald-600 px-6 py-3 rounded-xl text-[10px] font-black uppercase">Save Update</button>
+                            <button onClick={() => saveChanges(item.assignmentId)} className="bg-emerald-600 px-6 py-3 rounded-xl text-[10px] font-black uppercase">{t(language, 'saveUpdate')}</button>
                           ) : (
                             <button onClick={() => {
                                 setEditingId(item.assignmentId);
                                 setEditFormData({ ...item });
-                              }} className="bg-white/5 hover:bg-white/10 border border-white/10 px-6 py-3 rounded-xl text-[10px] font-black uppercase">Modify Lead</button>
+                              }} className="bg-white/5 hover:bg-white/10 border border-white/10 px-6 py-3 rounded-xl text-[10px] font-black uppercase">{t(language, 'modifyLead')}</button>
                           )
                         )}
-                        <button onClick={() => navigate(`/cases/${item.caseId}`)} className="text-blue-400 text-[10px] font-black uppercase hover:underline">Full Dossier →</button>
+                        <button onClick={() => navigate(`/cases/${item.caseId}`)} className="text-blue-400 text-[10px] font-black uppercase hover:underline">{t(language, 'fullDossier')}</button>
                       </div>
                       <div className="text-right">
-                        <p className="text-[8px] text-gray-600 font-black uppercase">Last Updated</p>
+                        <p className="text-[8px] text-gray-600 font-black uppercase">{t(language, 'lastUpdated')}</p>
                         <p className="text-[10px] font-mono text-gray-400">{item.lastEntryDate || item.assignedDate}</p>
                       </div>
                     </div>
@@ -444,7 +549,7 @@ const CaseAssignment = () => {
                         onClick={() => navigate(`/cases/${doc.caseId}`)}
                         className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black px-6 py-2 rounded-lg uppercase tracking-widest transition-all shadow-lg shadow-blue-600/20"
                        >
-                        View Case
+                        {t(language, 'analyze')}
                        </button>
                     </div>
                   </div>
@@ -465,9 +570,9 @@ const CaseAssignment = () => {
         <div className="text-center py-24 border-2 border-dashed border-white/5 rounded-[4rem]">
           <div className="bg-white/5 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">📂</div>
           <p className="text-gray-500 font-black uppercase tracking-widest">
-            {viewMode === 'assigned' ? "No Active Assignments Found" : 
-             viewMode === 'unassigned' ? "No Unassigned Cases Found" : 
-             "No Documents Found"}
+            {viewMode === 'assigned' ? t(language, 'noActiveAssignmentsFound') : 
+             viewMode === 'unassigned' ? t(language, 'noUnassignedCasesFound') : 
+             t(language, 'noDocumentsFound')}
           </p>
         </div>
       )}

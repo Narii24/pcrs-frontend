@@ -14,6 +14,7 @@ import Supervisor from '@/Supervisor';
 import Investigator from '@/Investigator';
 import api from '@/services/api';
 import { useAuthStore } from '@/stores/authStore';
+import { usePreferencesStore } from '@/stores/preferencesStore';
 
 const HomeRedirect: React.FC = () => {
   const { userInfo } = useAuthStore() as any;
@@ -68,7 +69,13 @@ const App = () => {
   const [cases, setCases] = useState<any[]>([]);
   const [refreshTrigger, setRefreshTrigger] = useState(0); // Global refresh trigger
   const [deletedCases, setDeletedCases] = useState<Set<string>>(new Set()); // Track deleted cases
-  const { token, isAuthenticated, error } = useAuthStore() as any;
+  const { token, isAuthenticated, loading, error } = useAuthStore() as any;
+  const { theme, language } = usePreferencesStore();
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.lang = language;
+  }, [theme, language]);
 
   const refreshCases = useCallback(async () => {
     console.log('DEBUG: refreshCases called');
@@ -80,13 +87,12 @@ const App = () => {
       ]);
 
       let nextCases: any[] = [];
+      let recoveredCases: any[] = [];
       
       if (casesRes.status === 'fulfilled') {
         nextCases = Array.isArray(casesRes.value.data) ? casesRes.value.data : [];
         // Filter out deleted cases
         nextCases = nextCases.filter(c => !deletedCases.has(String(c.caseId || '').toLowerCase()));
-        setCases(nextCases);
-        localStorage.setItem('cached_cases', JSON.stringify(nextCases));
       }
 
       if (assignmentsRes.status === 'fulfilled') {
@@ -113,109 +119,175 @@ const App = () => {
           const recoveredResults = await Promise.allSettled(
             missingIds.map(id => api.get(`/cases/${id}`))
           );
-          const recoveredCases = recoveredResults
+          recoveredCases = recoveredResults
             .filter(r => r.status === 'fulfilled')
             .map((r: any) => r.value.data)
             .filter(c => c && (c.caseId || c.id));
 
           if (recoveredCases.length > 0) {
+            recoveredCases = recoveredCases.filter(
+              c => !deletedCases.has(String(c.caseId || c.id || '').toLowerCase())
+            );
             nextCases = [...nextCases, ...recoveredCases];
-            setCases(nextCases);
           }
         }
       }
 
-      console.log('DEBUG: Total cases before deduplication:', nextCases.length);
-
-      // GLOBAL DEDUPLICATION & MERGE STRATEGY - DISABLED BY USER REQUEST
-      // The user wants to see ALL 54 database cases, including potential duplicates/ghost records.
-      // We keep the variable name 'uniqueCases' to minimize code changes downstream.
-      const uniqueCases = nextCases;
-
-      /*
-      const uniqueCases = nextCases.reduce((acc: any[], current: any) => {
-          const currentId = current.caseId;
-          // Improved Number Extraction
-          let currentNum = current.caseNumber || (current as any).case_number;
-          if (!currentNum && typeof currentId === 'string' && currentId.startsWith('C-')) {
-               currentNum = currentId.replace('C-', '');
-          }
-          
-          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-          const isReal = uuidRegex.test(currentId);
-          
-          const existingIndex = acc.findIndex(item => {
-             const itemId = item.caseId;
-             // Improved Number Extraction for Item
-             let itemNum = item.caseNumber || (item as any).case_number;
-             if (!itemNum && typeof itemId === 'string' && itemId.startsWith('C-')) {
-                 itemNum = itemId.replace('C-', '');
-             }
-
-             if (itemId === currentId) return true;
-             // Strict number comparison
-             if (currentNum && itemNum && String(currentNum) === String(itemNum)) return true;
-             
-             // Cross-check C- ID with Number (Strict Match)
-             if (currentId === `C-${itemNum}`) return true;
-             if (itemId === `C-${currentNum}`) return true;
-
-             return false;
-          });
-          
-          if (existingIndex > -1) {
-              const existing = acc[existingIndex];
-              const existingIsReal = uuidRegex.test(existing.caseId);
-              if (isReal && !existingIsReal) {
-                  // MERGE STRATEGY: Keep assignment info if missing in new real record
-                  const merged = { ...current };
-                  // Check direct ID or object
-                  const existingAssignedId = existing.assignedInvestigatorId || existing.assignedInvestigator?.userId;
-                  const currentAssignedId = merged.assignedInvestigatorId || merged.assignedInvestigator?.userId;
-
-                  if (!currentAssignedId && existingAssignedId) {
-                      merged.assignedInvestigatorId = existingAssignedId;
-                  }
-                  if (!merged.caseNumber && existing.caseNumber) {
-                       merged.caseNumber = existing.caseNumber;
-                  }
-                  acc[existingIndex] = merged;
-              } else if (!isReal && existingIsReal) {
-                   // Existing is real, current is C-. Update existing if it's missing info
-                   const merged = { ...existing };
-                   let changed = false;
-                   
-                   const existingAssignedId = merged.assignedInvestigatorId || merged.assignedInvestigator?.userId;
-                   const currentAssignedId = current.assignedInvestigatorId || current.assignedInvestigator?.userId;
-
-                   if (!existingAssignedId && currentAssignedId) {
-                       merged.assignedInvestigatorId = currentAssignedId;
-                       changed = true;
-                   }
-                   if (!merged.caseNumber && current.caseNumber) {
-                       merged.caseNumber = current.caseNumber;
-                       changed = true;
-                   }
-                   if (changed) acc[existingIndex] = merged;
-              }
-          } else {
-              acc.push(current);
-          }
-          return acc;
-        }, []);
-        */
-
-      console.log('DEBUG: Final unique cases count:', uniqueCases.length);
-      setCases(uniqueCases);
-
-      // Cache the final processed list if we successfully fetched data
-      if (casesRes.status === 'fulfilled') {
-        localStorage.setItem('cached_cases', JSON.stringify(uniqueCases));
+      if (casesRes.status !== 'fulfilled' && recoveredCases.length === 0) {
+        console.warn('refreshCases: Unable to refresh cases (keeping current list)', {
+          casesStatus: casesRes.status,
+          assignmentsStatus: assignmentsRes.status,
+        });
+        return;
       }
 
-      // Trigger global refresh for all components
-      setRefreshTrigger(prev => prev + 1);
-      console.log('Global refresh triggered for all dashboard views');
+      console.log('DEBUG: Total cases before deduplication:', nextCases.length);
+
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      const normalizeCaseNumber = (raw: any) => {
+        const trimmed = String(raw ?? '').trim();
+        if (!trimmed) return '';
+        const digitsOnly = trimmed.replace(/\D/g, '');
+        return digitsOnly || trimmed;
+      };
+
+      const normalizeCaseId = (raw: any) => String(raw ?? '').trim();
+
+      const deriveCaseNumber = (c: any) => {
+        const num = normalizeCaseNumber(c?.caseNumber ?? c?.case_number);
+        if (num) return num;
+        const id = normalizeCaseId(c?.caseId ?? c?.case_id ?? c?.id ?? c?._id);
+        const match = id.match(/^C-(\d+)$/i);
+        return match?.[1] ? match[1] : '';
+      };
+
+      const deriveDedupKey = (c: any) => {
+        const num = deriveCaseNumber(c);
+        if (num) return `c-${String(num).toLowerCase()}`;
+        const id = normalizeCaseId(c?.caseId ?? c?.case_id ?? c?.id ?? c?._id);
+        return id ? id.toLowerCase() : '';
+      };
+
+      const scoreCase = (c: any) => {
+        const id = normalizeCaseId(c?.caseId ?? c?.case_id ?? c?.id ?? c?._id);
+        const num = deriveCaseNumber(c);
+        const hasAssignee = !!(
+          c?.assignedInvestigatorId ||
+          c?.assigned_investigator_id ||
+          c?.assignedInvestigator?.userId ||
+          c?.assignedInvestigator ||
+          (Array.isArray(c?.assignedNames) && c.assignedNames.length > 0)
+        );
+        const hasTitle = !!String(c?.title ?? c?.caseTitle ?? '').trim();
+        const hasTimestamps = !!(
+          c?.updatedAt ||
+          c?.updated_at ||
+          c?.createdAt ||
+          c?.created_at ||
+          c?.registrationDate ||
+          c?.registration_date
+        );
+
+        let score = 0;
+        if (id && uuidRegex.test(id)) score += 100;
+        if (num) score += 50;
+        if (hasAssignee) score += 10;
+        if (hasTitle) score += 5;
+        if (hasTimestamps) score += 2;
+        return score;
+      };
+
+      const mergeAssignments = (a: any, b: any) => {
+        const out: any = {};
+
+        const aAssignedId =
+          a?.assignedInvestigatorId ||
+          a?.assigned_investigator_id ||
+          a?.assignedInvestigator?.userId ||
+          '';
+        const bAssignedId =
+          b?.assignedInvestigatorId ||
+          b?.assigned_investigator_id ||
+          b?.assignedInvestigator?.userId ||
+          '';
+
+        if (aAssignedId || bAssignedId) {
+          out.assignedInvestigatorId = aAssignedId || bAssignedId;
+        }
+
+        const aNames = Array.isArray(a?.assignedNames) ? a.assignedNames : [];
+        const bNames = Array.isArray(b?.assignedNames) ? b.assignedNames : [];
+        if (aNames.length || bNames.length) {
+          out.assignedNames = Array.from(
+            new Set(
+              [...aNames, ...bNames]
+                .map((n: any) => String(n ?? '').trim())
+                .filter(Boolean),
+            ),
+          );
+        }
+
+        return out;
+      };
+
+      const mergeCaseRecords = (existing: any, incoming: any) => {
+        const existingScore = scoreCase(existing);
+        const incomingScore = scoreCase(incoming);
+
+        const primary = incomingScore >= existingScore ? incoming : existing;
+        const secondary = primary === incoming ? existing : incoming;
+
+        const merged = {
+          ...secondary,
+          ...primary,
+          ...mergeAssignments(secondary, primary),
+        };
+
+        const mergedCaseNumber =
+          normalizeCaseNumber(merged?.caseNumber ?? merged?.case_number) ||
+          normalizeCaseNumber(primary?.caseNumber ?? primary?.case_number) ||
+          normalizeCaseNumber(secondary?.caseNumber ?? secondary?.case_number);
+        if (mergedCaseNumber) merged.caseNumber = mergedCaseNumber;
+
+        return merged;
+      };
+
+      const deduped: any[] = [];
+      const byKey = new Map<string, any>();
+
+      for (const c of nextCases) {
+        const key = deriveDedupKey(c);
+        if (!key) {
+          deduped.push(c);
+          continue;
+        }
+        const existing = byKey.get(key);
+        if (!existing) {
+          byKey.set(key, c);
+          continue;
+        }
+        byKey.set(key, mergeCaseRecords(existing, c));
+      }
+
+      const uniqueCases = [...byKey.values(), ...deduped];
+
+      console.log('DEBUG: Final unique cases count:', uniqueCases.length);
+      if (casesRes.status === 'fulfilled') {
+        setCases(uniqueCases);
+        localStorage.setItem('cached_cases', JSON.stringify(uniqueCases));
+        setRefreshTrigger(prev => prev + 1);
+        console.log('Global refresh triggered for all dashboard views');
+      } else if (recoveredCases.length > 0) {
+        setCases(prev => {
+          const existingIds = new Set(prev.map((c: any) => String(c.caseId || c.id || '').toLowerCase()));
+          const toAppend = recoveredCases.filter((c: any) => !existingIds.has(String(c.caseId || c.id || '').toLowerCase()));
+          return [...prev, ...toAppend];
+        });
+        setRefreshTrigger(prev => prev + 1);
+        console.log('Global refresh triggered for all dashboard views');
+      }
     } catch (err: any) {
       // Fallback if Promise.allSettled fails unexpectedly (though it shouldn't throw)
       console.warn('Refresh failed - Backend may be offline', err);
@@ -248,12 +320,14 @@ const App = () => {
       }
     } catch (_) {}
     if (error) return;
+    if (loading) return;
+    if (!isAuthenticated || !token) return;
     refreshCases();
-  }, [refreshCases, error]);
+  }, [refreshCases, error, loading, isAuthenticated, token]);
 
   if (error) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-[#020617] text-white p-10">
+      <div className="flex h-screen w-full items-center justify-center bg-[color:var(--pcrs-bg)] text-[color:var(--pcrs-text)] p-10">
         <div className="text-center max-w-lg animate-in fade-in zoom-in duration-500">
           <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -296,7 +370,7 @@ const App = () => {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={
-          <div className="bg-[#020617] h-screen flex flex-col items-center justify-center text-white text-center p-10">
+          <div className="bg-[color:var(--pcrs-bg)] h-screen flex flex-col items-center justify-center text-[color:var(--pcrs-text)] text-center p-10">
             <p className="animate-pulse font-bold tracking-[0.5em] text-blue-500 text-xs">ESTABLISHING ENCRYPTED LINK...</p>
           </div>
         } />
@@ -320,7 +394,12 @@ const App = () => {
           path="/Supervisor"
           element={
             <SupervisorRoute>
-              <Supervisor onRefresh={refreshCases} refreshTrigger={refreshTrigger} deletedCases={deletedCases} />
+              <Supervisor
+                cases={cases}
+                onRefresh={refreshCases}
+                refreshTrigger={refreshTrigger}
+                deletedCases={deletedCases}
+              />
             </SupervisorRoute>
           }
         />
@@ -336,7 +415,7 @@ const App = () => {
 
         <Route path="/*" element={
           <ProtectedRoute>
-            <div className="flex h-screen w-full overflow-hidden bg-[#020617]">
+            <div className="flex h-screen w-full overflow-hidden bg-[color:var(--pcrs-bg)] text-[color:var(--pcrs-text)]">
               <Sidebar />
               <div className="flex-1 flex flex-col relative overflow-hidden">
                 <Header />
@@ -355,7 +434,7 @@ const App = () => {
                     />
                     <Route path="/register-case" element={<CaseRegistration onRefresh={refreshCases} />} />
                     <Route path="/cases" element={<CaseList cases={cases} />} />
-                    <Route path="/cases/:id" element={<CaseDetails onCaseUpdated={refreshCases} />} />
+                    <Route path="/cases/:id" element={<CaseDetails onCaseUpdated={refreshCases} theme={theme} />} />
                     <Route path="/assign-cases" element={<CaseAssignment />} />
                     <Route path="/documents" element={<Documents />} />
                     <Route path="/" element={<HomeRedirect />} />

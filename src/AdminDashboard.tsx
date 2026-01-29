@@ -17,6 +17,7 @@ import api from '@/services/api';
 import { listUsers } from '@/services/User';
 import CaseDetails from '@/pages/CaseDetails';
 import { useAuthStore } from '@/stores/authStore';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 
 interface AdminProps {
   cases?: any[];
@@ -28,6 +29,9 @@ interface AdminProps {
 
 const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh, deletedCases, setDeletedCases }) => {
   const { userInfo, logout } = useAuthStore() as any;
+  const { language, theme, toggleTheme, setLanguage } = usePreferencesStore();
+  const isLight = theme === 'light';
+  const themeLabel = theme === 'dark' ? t(language, 'brightMode') : t(language, 'darkMode');
   const [searchTerm, setSearchTerm] = useState('');
   const [activeSection, setActiveSection] = useState<'dashboard' | 'cases' | 'assigned' | 'users'>('assigned');
   const [activeFilter, setActiveFilter] = useState<'all' | 'new' | 'progress' | 'closed'>('all');
@@ -63,34 +67,19 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
   const loadData = async () => {
     console.log('AdminDashboard: loadData start (Supervisor.tsx logic)');
 
-    const [casesRes, usersRes, assignmentsRes] = await Promise.allSettled([
-      api.get('/cases'),
+    const [usersRes, assignmentsRes] = await Promise.allSettled([
       api.get('/users'),
       api.get('/assignedcases'),
     ]);
 
-    let nextCases: any[] = [];
-    if (casesRes.status === 'fulfilled') {
-      nextCases = Array.isArray(casesRes.value.data) ? casesRes.value.data : [];
-    } else {
-      try {
-        const cached = localStorage.getItem('cached_cases');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) nextCases = parsed;
-        }
-      } catch (_) {}
-    }
-
-    if (deletedCases && deletedCases.size > 0) {
+    let nextCases: any[] = Array.isArray(cases) ? [...cases] : [];
+    if (deletedCases && deletedCases.size > 0 && nextCases.length > 0) {
       nextCases = nextCases.filter(c => {
-        const id = String(c.caseId || '').toLowerCase();
+        const id = String(c.caseId || c.case_id || c.id || '').trim().toLowerCase();
         if (!id) return true;
         return !deletedCases.has(id);
       });
     }
-
-    console.log('AdminDashboard: Cases loaded:', nextCases.length);
 
     let normalizedUsers: any[] = [];
     const localUserMap: Record<string, string> = {};
@@ -170,45 +159,9 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
       if (derived.length > 0) normalizedAssignments = derived;
     }
 
-    if (normalizedAssignments.length > 0 && nextCases.length > 0) {
-      const assignedIds = new Set(
-        normalizedAssignments
-          .map((a: any) => String(a.caseId || '').toLowerCase())
-          .filter((id: string) => id && id !== 'null' && id !== 'undefined'),
-      );
-      const existingIds = new Set(
-        nextCases.map((c: any) => String(c.caseId || '').toLowerCase()),
-      );
-      const missingIds = Array.from(assignedIds).filter(id => !existingIds.has(id));
-
-      if (missingIds.length > 0) {
-        const recoveredResults = await Promise.allSettled(
-          missingIds.map(id => api.get(`/cases/${id}`)),
-        );
-        const recoveredCases = recoveredResults
-          .filter(r => r.status === 'fulfilled')
-          .map((r: any) => r.value.data)
-          .filter((c: any) => c && (c.caseId || c.id));
-
-        if (recoveredCases.length > 0) {
-          nextCases = [...nextCases, ...recoveredCases];
-          if (deletedCases && deletedCases.size > 0) {
-            nextCases = nextCases.filter(c => {
-              const id = String(c.caseId || '').toLowerCase();
-              if (!id) return true;
-              return !deletedCases.has(id);
-            });
-          }
-        }
-      }
-    }
-
     console.log('AdminDashboard: Assignments loaded:', normalizedAssignments.length);
 
     setAssignments(normalizedAssignments);
-    if (setCases && nextCases.length > 0) {
-      setCases(nextCases);
-    }
 
     console.log('AdminDashboard: loadData complete (Supervisor.tsx logic)');
   };
@@ -448,16 +401,16 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
     let label = '';
     
     if (!status || normalized === 'registered') {
-      style = 'bg-blue-500/10 text-blue-300 border-blue-500/20';
-      label = 'New Case';
+      style = isLight ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-blue-500/10 text-blue-300 border-blue-500/20';
+      label = t(language, 'newCase');
     } else if (normalized.includes('progress')) {
-      style = 'bg-orange-500/10 text-orange-300 border-orange-500/20';
+      style = isLight ? 'bg-orange-50 text-orange-700 border-orange-200' : 'bg-orange-500/10 text-orange-300 border-orange-500/20';
       label = status;
     } else if (normalized.includes('closed')) {
-      style = 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20';
+      style = isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20';
       label = status;
     } else {
-      style = 'bg-white/5 text-slate-300 border-white/10';
+      style = isLight ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-white/5 text-slate-300 border-white/10';
       label = status;
     }
     
@@ -479,15 +432,35 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
   };
 
   return (
-    <div className="flex h-screen bg-gradient-to-r from-[#00040F] to-[#0A1631]">
-      <aside className="w-72 bg-[#0f172a] text-white flex flex-col">
+    <div
+      className={`flex h-screen ${
+        isLight
+          ? 'bg-slate-50 text-slate-900'
+          : 'bg-gradient-to-r from-[#00040F] to-[#0A1631] text-white'
+      }`}
+    >
+      <aside
+        className={`w-72 flex flex-col ${
+          isLight ? 'bg-white border-r border-slate-200 text-slate-900' : 'bg-[#0f172a] text-white'
+        }`}
+      >
         <div className="px-8 pt-8 pb-6 flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-blue-600/10 border border-blue-500/40">
-            <ShieldCheck className="text-blue-400" size={24} />
+          <div
+            className={`p-2 rounded-xl border ${
+              isLight ? 'bg-blue-50 border-blue-200' : 'bg-blue-600/10 border-blue-500/40'
+            }`}
+          >
+            <ShieldCheck className={isLight ? 'text-blue-600' : 'text-blue-400'} size={24} />
           </div>
           <div>
-            <h1 className="text-xl font-black">Admin Panel</h1>
-            <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-widest">PCR Management</p>
+            <h1 className="text-xl font-black">{t(language, 'adminPanel')}</h1>
+            <p
+              className={`text-[11px] font-semibold uppercase tracking-widest ${
+                isLight ? 'text-slate-500' : 'text-slate-400'
+              }`}
+            >
+              {t(language, 'pcrManagement')}
+            </p>
           </div>
         </div>
 
@@ -495,69 +468,85 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
           <button
             type="button"
             onClick={() => setActiveSection('dashboard')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition ${
               activeSection === 'dashboard'
                 ? 'bg-blue-600 text-white'
-                : 'text-slate-400 hover:bg-white/5 hover:text-white transition'
+                : isLight
+                  ? 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-white'
             }`}
           >
             <LayoutDashboard size={18} />
-            <span>Dashboard</span>
+            <span>{t(language, 'dashboard')}</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveSection('cases')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition ${
               activeSection === 'cases'
                 ? 'bg-blue-600 text-white'
-                : 'text-slate-400 hover:bg-white/5 hover:text-white transition'
+                : isLight
+                  ? 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-white'
             }`}
           >
             <Briefcase size={18} />
-            <span>Cases</span>
+            <span>{t(language, 'cases')}</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveSection('assigned')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition ${
               activeSection === 'assigned'
                 ? 'bg-blue-600 text-white'
-                : 'text-slate-400 hover:bg-white/5 hover:text-white transition'
+                : isLight
+                  ? 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-white'
             }`}
           >
             <ClipboardList size={18} />
-            <span>Assigned Cases</span>
+            <span>{t(language, 'assignedCases')}</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveSection('users')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition ${
               activeSection === 'users'
                 ? 'bg-blue-600 text-white'
-                : 'text-slate-400 hover:bg-white/5 hover:text-white transition'
+                : isLight
+                  ? 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-white'
             }`}
           >
             <Users size={18} />
-            <span>Users</span>
+            <span>{t(language, 'users')}</span>
           </button>
         </nav>
 
         <div className="mt-auto px-4 pb-6">
-          <div className="bg-white/5 rounded-2xl border border-white/10 p-4 flex items-center gap-4">
+          <div
+            className={`rounded-2xl border p-4 flex items-center gap-4 ${
+              isLight ? 'bg-slate-50 border-slate-200' : 'bg-white/5 border-white/10'
+            }`}
+          >
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white font-black shadow-lg shadow-blue-500/20">
               {String(userInfo?.name || userInfo?.username || 'A').charAt(0).toUpperCase()}
             </div>
             <div className="overflow-hidden">
-              <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">
-                Administrator
+              <p
+                className={`text-[10px] font-black uppercase tracking-widest ${
+                  isLight ? 'text-slate-500' : 'text-slate-400'
+                }`}
+              >
+                {t(language, 'administrator')}
               </p>
-              <p className="text-sm font-bold text-white truncate italic">
+              <p className={`text-sm font-bold truncate italic ${isLight ? 'text-slate-900' : 'text-white'}`}>
                 {userInfo?.name || userInfo?.username || userInfo?.preferred_username || 'admin'}
               </p>
               <div className="flex items-center gap-1 mt-1">
                 <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
                 <span className="text-[9px] text-emerald-500 font-bold uppercase tracking-tighter">
-                  Authorized
+                  {t(language, 'authorized')}
                 </span>
               </div>
             </div>
@@ -566,40 +555,81 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
       </aside>
 
       <div className="flex-1 flex flex-col">
-        <header className="bg-white/5 backdrop-blur-md border-b border-white/10 px-10 py-6">
+        <header
+          className={`px-10 py-6 ${
+            isLight
+              ? 'bg-white border-b border-slate-200'
+              : 'bg-white/5 backdrop-blur-md border-b border-white/10'
+          }`}
+        >
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-2xl font-black text-white uppercase">
-                {activeSection === 'dashboard' && 'Dashboard Overview'}
-                {activeSection === 'cases' && 'All Cases'}
-                {activeSection === 'assigned' && 'Assigned Cases'}
-                {activeSection === 'users' && 'User Management'}
+              <h2 className={`text-2xl font-black uppercase ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                {activeSection === 'dashboard' && t(language, 'dashboard')}
+                {activeSection === 'cases' && t(language, 'cases')}
+                {activeSection === 'assigned' && t(language, 'assignedCases')}
+                {activeSection === 'users' && t(language, 'userDirectory')}
               </h2>
-              <p className="text-[11px] text-slate-300 font-semibold mt-1">
-                {activeSection === 'dashboard' && 'System statistics and case overview'}
-                {activeSection === 'cases' && `Total ${cases.length} cases in the system`}
-                {activeSection === 'assigned' && `${assignedCases.length} assigned cases in the system`}
-                {activeSection === 'users' && 'Manage system users and permissions'}
+              <p className={`text-[11px] font-semibold mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>
+                {activeSection === 'dashboard' && t(language, 'adminDashboardSubtitle')}
+                {activeSection === 'cases' && t(language, 'adminCasesSubtitle')}
+                {activeSection === 'assigned' && t(language, 'adminAssignedSubtitle')}
+                {activeSection === 'users' && t(language, 'adminUsersSubtitle')}
               </p>
             </div>
             <div className="flex items-center gap-4">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                <Search
+                  className={`absolute left-3 top-1/2 -translate-y-1/2 ${isLight ? 'text-slate-400' : 'text-slate-300'}`}
+                  size={18}
+                />
                 <input
                   type="text"
-                  placeholder="Search cases..."
+                  placeholder={t(language, 'searchCasesPlaceholder')}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10 pr-4 py-2 border border-white/10 bg-white/5 text-white placeholder-slate-500 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+                  className={`pl-10 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64 ${
+                    isLight
+                      ? 'border-slate-200 bg-white text-slate-900 placeholder-slate-400'
+                      : 'border-white/10 bg-white/5 text-white placeholder-slate-500'
+                  }`}
                 />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-black uppercase tracking-widest ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>
+                  {t(language, 'language')}
+                </span>
+                <select
+                  value={language}
+                  onChange={e => setLanguage(e.target.value as any)}
+                  className={`h-9 px-3 rounded-lg border text-[10px] font-black uppercase tracking-widest outline-none ${
+                    isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-white/5 border-white/10 text-white'
+                  }`}
+                >
+                  <option value="en">EN</option>
+                  <option value="am">AM</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className={`h-9 px-3 rounded-lg border text-[10px] font-black uppercase tracking-widest ${
+                    isLight ? 'bg-slate-100 border-slate-200 text-slate-900 hover:bg-slate-200' : 'bg-white/5 border-white/10 text-white hover:bg-white/10'
+                  }`}
+                >
+                  {themeLabel}
+                </button>
               </div>
               <button
                 type="button"
                 onClick={logout}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold border border-red-500/30 text-red-300 bg-red-500/10 hover:bg-red-600 hover:text-white hover:border-red-600 transition-colors"
+                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold border transition-colors ${
+                    isLight
+                      ? 'border-red-200 text-red-700 bg-red-50 hover:bg-red-600 hover:text-white hover:border-red-600'
+                      : 'border-red-500/30 text-red-300 bg-red-500/10 hover:bg-red-600 hover:text-white hover:border-red-600'
+                  }`}
               >
                 <LogOut size={16} />
-                Logout
+                {t(language, 'logout')}
               </button>
             </div>
           </div>
@@ -611,6 +641,7 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
               caseId={selectedCaseId}
               embedded
               startInEdit={detailMode === 'edit'}
+              theme={isLight ? 'light' : 'dark'}
               onClose={() => {
                 setSelectedCaseId(null);
                 setDetailMode(null);
@@ -624,99 +655,107 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <div 
                       onClick={() => setActiveFilter('all')}
-                      className={`bg-white/5 p-6 rounded-xl border shadow-sm cursor-pointer transition-all hover:bg-white/10 ${
+                      className={`p-6 rounded-xl border shadow-sm cursor-pointer transition-all ${
+                        isLight ? 'bg-white hover:bg-slate-50' : 'bg-white/5 hover:bg-white/10'
+                      } ${
                         activeFilter === 'all' 
                           ? 'border-blue-500 ring-2 ring-blue-500/20' 
-                          : 'border-white/10 hover:border-blue-500/30'
+                          : isLight ? 'border-slate-200 hover:border-blue-300' : 'border-white/10 hover:border-blue-500/30'
                       }`}
                     >
                       <div className="flex items-center justify-between mb-4">
                         <div className="p-2 rounded-lg bg-blue-500/10">
-                          <Briefcase className="text-blue-300" size={20} />
+                          <Briefcase className={isLight ? 'text-blue-600' : 'text-blue-300'} size={20} />
                         </div>
-                        <span className="text-[10px] font-bold text-blue-300 uppercase">Total</span>
+                        <span className={`text-[10px] font-bold uppercase ${isLight ? 'text-blue-600' : 'text-blue-300'}`}>{t(language, 'total')}</span>
                       </div>
-                      <p className="text-3xl font-bold text-white">{stats.total}</p>
-                      <p className="text-[11px] text-slate-300 mt-1">All Cases</p>
+                      <p className={`text-3xl font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{stats.total}</p>
+                      <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{t(language, 'cases')}</p>
                     </div>
                     <div 
                       onClick={() => setActiveFilter('new')}
-                      className={`bg-white/5 p-6 rounded-xl border shadow-sm cursor-pointer transition-all hover:bg-white/10 ${
+                      className={`p-6 rounded-xl border shadow-sm cursor-pointer transition-all ${
+                        isLight ? 'bg-white hover:bg-slate-50' : 'bg-white/5 hover:bg-white/10'
+                      } ${
                         activeFilter === 'new' 
                           ? 'border-blue-500 ring-2 ring-blue-500/20' 
-                          : 'border-white/10 hover:border-blue-500/30'
+                          : isLight ? 'border-slate-200 hover:border-blue-300' : 'border-white/10 hover:border-blue-500/30'
                       }`}
                     >
                       <div className="flex items-center justify-between mb-4">
                         <div className="p-2 rounded-lg bg-blue-500/10">
-                          <Bell className="text-blue-300" size={20} />
+                          <Bell className={isLight ? 'text-blue-600' : 'text-blue-300'} size={20} />
                         </div>
-                        <span className="text-[10px] font-bold text-blue-300 uppercase">New</span>
+                        <span className={`text-[10px] font-bold uppercase ${isLight ? 'text-blue-600' : 'text-blue-300'}`}>{t(language, 'new')}</span>
                       </div>
-                      <p className="text-3xl font-bold text-blue-300">{stats.new}</p>
-                      <p className="text-[11px] text-slate-300 mt-1">New Cases</p>
+                      <p className={`text-3xl font-bold ${isLight ? 'text-blue-600' : 'text-blue-300'}`}>{stats.new}</p>
+                      <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{t(language, 'newCases')}</p>
                     </div>
                     <div 
                       onClick={() => setActiveFilter('progress')}
-                      className={`bg-white/5 p-6 rounded-xl border shadow-sm cursor-pointer transition-all hover:bg-white/10 ${
+                      className={`p-6 rounded-xl border shadow-sm cursor-pointer transition-all ${
+                        isLight ? 'bg-white hover:bg-slate-50' : 'bg-white/5 hover:bg-white/10'
+                      } ${
                         activeFilter === 'progress' 
                           ? 'border-orange-500 ring-2 ring-orange-500/20' 
-                          : 'border-white/10 hover:border-orange-500/30'
+                          : isLight ? 'border-slate-200 hover:border-orange-300' : 'border-white/10 hover:border-orange-500/30'
                       }`}
                     >
                       <div className="flex items-center justify-between mb-4">
                         <div className="p-2 rounded-lg bg-orange-500/10">
-                          <Bell className="text-orange-300" size={20} />
+                          <Bell className={isLight ? 'text-orange-600' : 'text-orange-300'} size={20} />
                         </div>
-                        <span className="text-[10px] font-bold text-orange-300 uppercase">Progress</span>
+                        <span className={`text-[10px] font-bold uppercase ${isLight ? 'text-orange-600' : 'text-orange-300'}`}>{t(language, 'inProgress')}</span>
                       </div>
-                      <p className="text-3xl font-bold text-orange-300">{stats.progress}</p>
-                      <p className="text-[11px] text-slate-300 mt-1">In Progress</p>
+                      <p className={`text-3xl font-bold ${isLight ? 'text-orange-600' : 'text-orange-300'}`}>{stats.progress}</p>
+                      <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{t(language, 'inProgress')}</p>
                     </div>
                     <div 
                       onClick={() => setActiveFilter('closed')}
-                      className={`bg-white/5 p-6 rounded-xl border shadow-sm cursor-pointer transition-all hover:bg-white/10 ${
+                      className={`p-6 rounded-xl border shadow-sm cursor-pointer transition-all ${
+                        isLight ? 'bg-white hover:bg-slate-50' : 'bg-white/5 hover:bg-white/10'
+                      } ${
                         activeFilter === 'closed' 
                           ? 'border-emerald-500 ring-2 ring-emerald-500/20' 
-                          : 'border-white/10 hover:border-emerald-500/30'
+                          : isLight ? 'border-slate-200 hover:border-emerald-300' : 'border-white/10 hover:border-emerald-500/30'
                       }`}
                     >
                       <div className="flex items-center justify-between mb-4">
                         <div className="p-2 rounded-lg bg-emerald-500/10">
-                          <Briefcase className="text-emerald-300" size={20} />
+                          <Briefcase className={isLight ? 'text-emerald-700' : 'text-emerald-300'} size={20} />
                         </div>
-                        <span className="text-[10px] font-bold text-emerald-300 uppercase">Closed</span>
+                        <span className={`text-[10px] font-bold uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>{t(language, 'closed')}</span>
                       </div>
-                      <p className="text-3xl font-bold text-emerald-300">{stats.closed}</p>
-                      <p className="text-[11px] text-slate-300 mt-1">Completed</p>
+                      <p className={`text-3xl font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>{stats.closed}</p>
+                      <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{t(language, 'closed')}</p>
                     </div>
                   </div>
 
-                  <div className="bg-white/5 rounded-xl border border-white/10 shadow-sm overflow-hidden">
-                    <div className="p-6 border-b border-white/10">
-                      <h3 className="text-lg font-bold text-white">All Cases</h3>
-                      <p className="text-[11px] text-slate-300 mt-1">{filteredCases.length} total cases</p>
+                  <div className={`rounded-xl border shadow-sm overflow-hidden ${isLight ? 'bg-white border-slate-200' : 'bg-white/5 border-white/10'}`}>
+                    <div className={`p-6 border-b ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
+                      <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{t(language, 'cases')}</h3>
+                      <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{filteredCases.length} {t(language, 'total')}</p>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-left">
-                        <thead className="bg-white/5 border-b border-white/10">
+                        <thead className={isLight ? 'bg-slate-50 border-b border-slate-200' : 'bg-white/5 border-b border-white/10'}>
                           <tr>
-                            <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Case Number</th>
-                            <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Title</th>
-                            <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Status</th>
-                            <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase text-right">Actions</th>
+                            <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'caseNumber')}</th>
+                            <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'titleLabel')}</th>
+                            <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'statusLabel')}</th>
+                            <th className={`px-6 py-3 text-[10px] font-bold uppercase text-right ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'actions')}</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-white/10">
+                        <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-white/10'}>
                           {filteredCases.map((caseItem: any) => (
-                            <tr key={caseItem.caseId || caseItem.id} className="hover:bg-white/5">
+                            <tr key={caseItem.caseId || caseItem.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'}>
                               <td className="px-6 py-4">
-                                <div className="font-mono text-sm font-bold text-blue-300 bg-blue-500/10 border border-blue-500/20 px-3 py-2 rounded-lg inline-block">
+                                <div className={`font-mono text-sm font-bold bg-blue-500/10 border border-blue-500/20 px-3 py-2 rounded-lg inline-block ${isLight ? 'text-blue-700' : 'text-blue-300'}`}>
                                   {caseItem.caseNumber || (caseItem as any).case_number || `PCRS-${String(caseItem.caseId || '').substring(0, 8)}` || 'N/A'}
                                 </div>
                               </td>
                               <td className="px-6 py-4">
-                                <div className="font-medium text-white">{caseItem.title}</div>
+                                <div className={`font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>{caseItem.title}</div>
                               </td>
                               <td className="px-6 py-4">
                                 {getStatusBadge(caseItem.currentStatus)}
@@ -724,9 +763,9 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                               <td className="px-6 py-4 text-right">
                                 <button 
                                   onClick={() => handleView(caseItem.caseId || caseItem.id)}
-                                  className="text-blue-300 hover:text-blue-200 text-xs font-medium"
+                                  className={`text-xs font-medium ${isLight ? 'text-blue-700 hover:text-blue-800' : 'text-blue-300 hover:text-blue-200'}`}
                                 >
-                                  View
+                                  {t(language, 'viewLabel')}
                                 </button>
                               </td>
                             </tr>
@@ -734,7 +773,7 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                           {filteredCases.length === 0 && (
                             <tr>
                               <td colSpan={4} className="px-6 py-10 text-center text-[11px] text-slate-400 font-semibold uppercase">
-                                No cases found.
+                                {t(language, 'noCasesFound')}
                               </td>
                             </tr>
                           )}
@@ -746,31 +785,31 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
               )}
 
               {activeSection === 'cases' && (
-                <div className="bg-white/5 rounded-xl border border-white/10 shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-white/10">
-                    <h3 className="text-lg font-bold text-white">All Cases</h3>
-                    <p className="text-[11px] text-slate-300 mt-1">{allCasesForCasesSection.length} cases found</p>
+                <div className={`rounded-xl border shadow-sm overflow-hidden ${isLight ? 'bg-white border-slate-200' : 'bg-white/5 border-white/10'}`}>
+                  <div className={`p-6 border-b ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
+                    <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{t(language, 'cases')}</h3>
+                    <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{allCasesForCasesSection.length} {t(language, 'total')}</p>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
-                      <thead className="bg-white/5 border-b border-white/10">
+                      <thead className={isLight ? 'bg-slate-50 border-b border-slate-200' : 'bg-white/5 border-b border-white/10'}>
                         <tr>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Case Number</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Title</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Status</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase text-right">Actions</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'caseNumber')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'titleLabel')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'statusLabel')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase text-right ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'actions')}</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-white/10">
+                      <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-white/10'}>
                         {allCasesForCasesSection.map((caseItem: any) => (
-                          <tr key={caseItem.caseId || caseItem.id} className="hover:bg-white/5">
+                          <tr key={caseItem.caseId || caseItem.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'}>
                             <td className="px-6 py-4">
-                              <div className="font-mono text-sm font-bold text-blue-300 bg-blue-500/10 border border-blue-500/20 px-3 py-2 rounded-lg inline-block">
+                              <div className={`font-mono text-sm font-bold bg-blue-500/10 border border-blue-500/20 px-3 py-2 rounded-lg inline-block ${isLight ? 'text-blue-700' : 'text-blue-300'}`}>
                                 {caseItem.caseNumber || (caseItem as any).case_number || `PCRS-${String(caseItem.caseId || '').substring(0, 8)}` || 'N/A'}
                               </div>
                             </td>
                             <td className="px-6 py-4">
-                              <div className="font-medium text-white">{caseItem.title}</div>
+                              <div className={`font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>{caseItem.title}</div>
                             </td>
                             <td className="px-6 py-4">
                               {getStatusBadge(caseItem.currentStatus)}
@@ -778,9 +817,9 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                             <td className="px-6 py-4 text-right">
                               <button 
                                 onClick={() => handleView(caseItem.caseId || caseItem.id)}
-                                className="text-blue-300 hover:text-blue-200 text-xs font-medium"
+                                className={`text-xs font-medium ${isLight ? 'text-blue-700 hover:text-blue-800' : 'text-blue-300 hover:text-blue-200'}`}
                               >
-                                View
+                                {t(language, 'viewLabel')}
                               </button>
                             </td>
                           </tr>
@@ -792,10 +831,10 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
               )}
 
               {activeSection === 'assigned' && (
-                <div className="bg-white/5 rounded-xl border border-white/10 shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-white/10">
-                    <h3 className="text-lg font-bold text-white">Assigned Cases (Supervisor.tsx Logic)</h3>
-                    <p className="text-[11px] text-slate-300 mt-1">
+                <div className={`rounded-xl border shadow-sm overflow-hidden ${isLight ? 'bg-white border-slate-200' : 'bg-white/5 border-white/10'}`}>
+                  <div className={`p-6 border-b ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
+                    <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{t(language, 'assignedCases')}</h3>
+                    <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>
                       {assignedCasesForSection.length} assigned cases found | 
                       Total cases: {cases.length} | 
                       Assignments: {assignments.length} | 
@@ -804,16 +843,16 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
-                      <thead className="bg-white/5 border-b border-white/10">
+                      <thead className={isLight ? 'bg-slate-50 border-b border-slate-200' : 'bg-white/5 border-b border-white/10'}>
                         <tr>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Case Number</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Title</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Assigned To</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Status</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase text-right">Actions</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'caseNumber')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'titleLabel')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'investigatorLabel')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'statusLabel')}</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase text-right ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'actions')}</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-white/10">
+                      <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-white/10'}>
                         {assignedCasesForSection.map((caseItem: any, idx: number) => {
                           const assignedNames: string[] = Array.isArray(caseItem.assignedNames) ? caseItem.assignedNames : [];
                           const cid = caseItem.caseId ? String(caseItem.caseId) : '';
@@ -823,24 +862,24 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                                 ? `C-${caseItem.caseNumber}`
                                 : (cid ? cid.slice(0, 8) + '...' : '—'));
                           return (
-                            <tr key={cid || String(idx)} className="hover:bg-white/5">
+                            <tr key={cid || String(idx)} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'}>
                               <td className="px-6 py-4">
-                                <div className="font-mono text-sm font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 rounded-lg inline-block">
+                              <div className={`font-mono text-sm font-bold bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 rounded-lg inline-block ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
                                   {displayId}
                                 </div>
                               </td>
                               <td className="px-6 py-4">
-                                <div className="font-medium text-white">{caseItem.title || 'Untitled'}</div>
-                                <div className="text-[10px] text-slate-300 font-semibold mt-1">{caseItem.currentStatus}</div>
+                                <div className={`font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>{caseItem.title || t(language, 'untitledCase')}</div>
+                                <div className={`text-[10px] font-semibold mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{caseItem.currentStatus}</div>
                               </td>
                               <td className="px-6 py-4">
                                 <div className="flex flex-wrap gap-1">
                                   {assignedNames.length > 0 ? assignedNames.map((name: string, i: number) => (
-                                    <span key={i} className="px-2 py-1 bg-white/10 border border-white/10 text-[10px] text-slate-200 font-medium rounded">
+                                    <span key={i} className={`px-2 py-1 border text-[10px] font-medium rounded ${isLight ? 'bg-slate-100 border-slate-200 text-slate-700' : 'bg-white/10 border-white/10 text-slate-200'}`}>
                                       {name}
                                     </span>
                                   )) : (
-                                    <span className="text-slate-300 text-xs">Not assigned</span>
+                                    <span className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>{t(language, 'unassigned')}</span>
                                   )}
                                 </div>
                               </td>
@@ -850,9 +889,9 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                               <td className="px-6 py-4 text-right">
                                 <button 
                                   onClick={() => handleView(caseItem.caseId || caseItem.id)}
-                                  className="text-blue-300 hover:text-blue-200 text-xs font-medium"
+                                  className={`text-xs font-medium ${isLight ? 'text-blue-700 hover:text-blue-800' : 'text-blue-300 hover:text-blue-200'}`}
                                 >
-                                  View
+                                  {t(language, 'viewLabel')}
                                 </button>
                               </td>
                             </tr>
@@ -861,7 +900,7 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                         {assignedCasesForSection.length === 0 && (
                           <tr>
                             <td colSpan={5} className="px-6 py-10 text-center text-[11px] text-slate-400 font-semibold uppercase">
-                              No assigned cases found.
+                              {t(language, 'noAssignedCasesFound')}
                             </td>
                           </tr>
                         )}
@@ -872,13 +911,13 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
               )}
 
               {activeSection === 'users' && (
-                <div className="bg-white/5 rounded-xl border border-white/10 shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-white/10 flex items-center justify-between">
+                <div className={`rounded-xl border shadow-sm overflow-hidden ${isLight ? 'bg-white border-slate-200' : 'bg-white/5 border-white/10'}`}>
+                  <div className={`p-6 border-b flex items-center justify-between ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
                     <div>
-                      <h3 className="text-lg font-bold text-white">
+                      <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
                         {showKeycloakUsers ? 'Keycloak Users' : 'System Users'}
                       </h3>
-                      <p className="text-[11px] text-slate-300 mt-1">
+                      <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>
                         {showKeycloakUsers ? keycloakUsers.length : users.length} records
                       </p>
                     </div>
@@ -889,7 +928,7 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                         className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
                           !showKeycloakUsers
                             ? 'bg-blue-600 text-white'
-                            : 'bg-white/10 text-slate-200 hover:bg-white/15'
+                            : isLight ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-white/10 text-slate-200 hover:bg-white/15'
                         }`}
                       >
                          Users
@@ -905,7 +944,7 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                         className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
                           showKeycloakUsers
                             ? 'bg-blue-600 text-white'
-                            : 'bg-white/10 text-slate-200 hover:bg-white/15'
+                            : isLight ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-white/10 text-slate-200 hover:bg-white/15'
                         }`}
                       >
                         Users
@@ -914,35 +953,39 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
-                      <thead className="bg-white/5 border-b border-white/10">
+                      <thead className={isLight ? 'bg-slate-50 border-b border-slate-200' : 'bg-white/5 border-b border-white/10'}>
                         <tr>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Username</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Full Name</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Email</th>
-                          <th className="px-6 py-3 text-[10px] font-bold text-slate-300 uppercase">Status</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>Username</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>Full Name</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>Email</th>
+                          <th className={`px-6 py-3 text-[10px] font-bold uppercase ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>{t(language, 'statusLabel')}</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-white/10">
+                      <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-white/10'}>
                         {(showKeycloakUsers ? keycloakUsers : users).map((user: any) => {
                           const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
                           const isActive = showKeycloakUsers ? user.enabled : user.isActive;
                           const activeClass = isActive
-                            ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-                            : 'bg-white/5 text-slate-300 border-white/10';
+                            ? isLight
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                            : isLight
+                              ? 'bg-slate-100 text-slate-700 border-slate-200'
+                              : 'bg-white/5 text-slate-300 border-white/10';
                           const activeLabel = isActive ? 'Active' : 'Inactive';
                           
                           return (
-                            <tr key={user.userId || user.username || user.id} className="hover:bg-white/5">
+                            <tr key={user.userId || user.username || user.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'}>
                               <td className="px-6 py-4">
-                                <div className="font-medium text-white">{user.username}</div>
+                                <div className={`font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>{user.username}</div>
                               </td>
                               <td className="px-6 py-4">
-                                <div className="font-medium text-white">
+                                <div className={`font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>
                                   {fullName || user.displayName || 'N/A'}
                                 </div>
                               </td>
                               <td className="px-6 py-4">
-                                <div className="text-slate-300">{user.email || 'N/A'}</div>
+                                <div className={isLight ? 'text-slate-600' : 'text-slate-300'}>{user.email || 'N/A'}</div>
                               </td>
                               <td className="px-6 py-4">
                                 <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase border ${activeClass}`}>

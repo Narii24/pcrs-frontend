@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import keycloak from '@/services/keycloak';
 import { FiShield, FiLoader } from 'react-icons/fi';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 
 const Login = () => {
   const navigate = useNavigate();
   const { isAuthenticated, userInfo, loading } = useAuthStore() as any;
+  const { language } = usePreferencesStore();
 
   useEffect(() => {
     // 1. If not logged in, go to Keycloak
@@ -34,8 +36,8 @@ const Login = () => {
         <div className="inline-flex bg-blue-600 p-4 rounded-2xl mb-6 shadow-lg shadow-blue-500/20">
           <FiShield className="text-4xl text-white" />
         </div>
-        <h1 className="text-2xl font-black text-white tracking-tighter mb-2 uppercase">System Gateway</h1>
-        <p className="text-slate-400 text-xs mb-8 uppercase tracking-widest font-bold italic">Authorizing Session...</p>
+        <h1 className="text-2xl font-black text-white tracking-tighter mb-2 uppercase">{t(language, 'systemGateway')}</h1>
+        <p className="text-slate-400 text-xs mb-8 uppercase tracking-widest font-bold italic">{t(language, 'authorizingSession')}</p>
         <div className="flex justify-center">
           <FiLoader className="text-blue-500 text-2xl animate-spin" />
         </div>

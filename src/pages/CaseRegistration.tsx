@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, UserPlus, Trash2, FileUp } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore'; 
+import { usePreferencesStore, t } from '../stores/preferencesStore';
 import caseService from '../services/CaseService';
 import api from '../services/api';
 import { createInvestigatorLog } from '../services/InvestigatorLog';
+import { getPresignedUpload, presignEnabled, recordDocument } from '../services/storageService';
 
 interface CaseRegistrationProps {
   onRefresh?: () => void;
@@ -13,6 +15,7 @@ interface CaseRegistrationProps {
 const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
   const navigate = useNavigate();
   const { userInfo, token } = useAuthStore() as any;
+  const { language } = usePreferencesStore();
 
   // Form State
   const [formData, setFormData] = useState({
@@ -63,7 +66,7 @@ const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (parties.length === 0) {
-      alert("AT LEAST ONE PARTY REQUIRED.");
+      alert(t(language, 'atLeastOnePartyRequired'));
       return;
     }
 
@@ -149,123 +152,60 @@ const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
         }
         
         if (selectedFile) {
-          const contentType = selectedFile.type || 'application/octet-stream';
-          
-          console.log('=== DOCUMENT UPLOAD START ===');
-          console.log('File to upload:', selectedFile.name);
-          console.log('File size:', selectedFile.size);
-          console.log('Content type:', contentType);
-          console.log('Case ID:', canonicalCaseId);
-          
-          // Direct MinIO upload (bypass broken presigned endpoint)
+          const file = selectedFile;
+          const contentType = file.type || 'application/octet-stream';
+
           try {
-            console.log('🔄 Using direct MinIO upload (bypassing presigned)...');
-            
-            // Step 1: Upload directly to MinIO
-            const minioUrl = `http://localhost:9000/pcrs-file/cases/${canonicalCaseId}/${selectedFile.name}`;
-            console.log('🌐 Direct MinIO upload URL:', minioUrl);
-            
-            const minioResponse = await fetch(minioUrl, {
-              method: 'PUT',
-              body: selectedFile,
-              headers: {
-                'Content-Type': selectedFile.type || 'application/octet-stream'
-              }
-            });
-            
-            console.log('📤 MinIO upload response status:', minioResponse.status);
-            console.log('📤 MinIO upload response ok:', minioResponse.ok);
-            
-            if (minioResponse.ok) {
-              console.log('✅ Direct MinIO upload successful!');
-              console.log('📍 File now in MinIO at: pcrs-file/cases/' + canonicalCaseId + '/' + selectedFile.name);
-              
-              // Step 2: Create database record
-              console.log('📝 Creating database record for uploaded file...');
-              const data = new FormData();
-              data.append('caseId', String(canonicalCaseId));
-              data.append('typeOfDocument', 'Case Document');
-              data.append('locationOfTheStorage', 'MinIO - pcrs-file');
-              data.append('file_name', selectedFile.name);
-              data.append('fileSize', String(selectedFile.size));
-              
-              const uploadResponse = await api.post(`/documents/upload?caseId=${canonicalCaseId}`, data, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-                timeout: 30000
+            if (presignEnabled()) {
+              const presign = await getPresignedUpload({
+                caseId: String(canonicalCaseId),
+                fileName: file.name,
+                contentType,
               });
-              
-              console.log('✅ Database record created:', uploadResponse.status);
-              console.log('🎉 SUCCESS: File is in MinIO AND recorded in database!');
-              
-              if (uploadResponse.status === 200 || uploadResponse.status === 201) {
-                documentUploadSuccess = true;
-                console.log('📍 MinIO location: pcrs-file/cases/' + canonicalCaseId + '/' + selectedFile.name);
-                console.log('🗄️ Database: Document table updated with file metadata');
-                
-                if (uploadResponse.data?.documentId) {
-                  console.log('✅ Document ID created:', uploadResponse.data.documentId);
-                  console.log('🔗 View URL:', uploadResponse.data.viewTheUploadedDocument || uploadResponse.data.documentUpload);
-                  
-                  console.log('🔍 VERIFYING: File should now be visible in MinIO!');
-                  console.log('🌐 MinIO Console: http://localhost:9000');
-                  console.log('📂 Path: pcrs-file → cases → ' + canonicalCaseId + ' → ' + selectedFile.name);
-                  console.log('✅ File should be visible immediately in MinIO console!');
-                  
-                  setTimeout(() => {
-                    console.log('🔗 Direct MinIO Link:', `http://localhost:9000/buckets/pcrs-file/browse/cases/${canonicalCaseId}`);
-                    console.log('📋 CHECKLIST:');
-                    console.log('  1. Open MinIO Console: http://localhost:9000');
-                    console.log('  2. Navigate to: pcrs-file → cases → ' + canonicalCaseId);
-                    console.log('  3. Look for file:', selectedFile.name);
-                    console.log('  4. File should be there now! ✅');
-                  }, 2000);
-                } else {
-                  console.warn('⚠️ No documentId in response');
-                }
-              } else {
-                console.error('❌ Database record creation failed:', uploadResponse.status);
+
+              const putRes = await fetch(presign.url, {
+                method: 'PUT',
+                headers: { 'Content-Type': contentType },
+                body: file,
+              });
+
+              if (!putRes.ok) {
+                throw new Error(`MinIO upload failed: ${putRes.status}`);
               }
+
+              await recordDocument({
+                caseId: String(canonicalCaseId),
+                objectKey: presign.key,
+                typeOfDocument: 'Case Document',
+                locationOfTheStorage: 'MinIO - pcrs-file',
+                originalName: file.name,
+                size: file.size,
+                contentType,
+              });
+
+              documentUploadSuccess = true;
             } else {
-              console.error('❌ Direct MinIO upload failed:', minioResponse.status);
-              console.error('❌ Response text:', await minioResponse.text());
-              throw new Error(`MinIO upload failed: ${minioResponse.status}`);
+              throw new Error('MinIO presign disabled');
             }
-            
-          } catch (directErr: any) {
-            console.error('❌ Direct MinIO upload failed:', directErr);
-            console.error('❌ Error details:', directErr.message);
-            
-            // Fallback: Try backend upload
+          } catch (_) {
             try {
-              console.log('🔄 Using backend fallback upload...');
               const data = new FormData();
               data.append('caseId', String(canonicalCaseId));
               data.append('typeOfDocument', 'Case Document');
               data.append('locationOfTheStorage', 'MinIO - pcrs-file');
-              data.append('file', selectedFile);
-              data.append('file_name', selectedFile.name);
-              
-              const uploadResponse = await api.post(`/documents/upload?caseId=${canonicalCaseId}`, data, {
+              data.append('file', file);
+
+              const uploadResponse = await api.post('/documents/upload', data, {
                 headers: { 'Content-Type': 'multipart/form-data' },
-                timeout: 30000
+                timeout: 30000,
               });
-              
-              console.log('✅ Backend upload response:', uploadResponse.status);
-              
+
               if (uploadResponse.status === 200 || uploadResponse.status === 201) {
                 documentUploadSuccess = true;
-                console.log('📍 MinIO location: pcrs-file/cases/' + canonicalCaseId + '/' + selectedFile.name);
-                console.log('⚠️ NOTE: Backend upload may not actually store files in MinIO');
-                console.log('🔍 Check MinIO console to verify file presence');
-              } else {
-                console.error('❌ Backend upload failed:', uploadResponse.status);
               }
-            } catch (backendErr) {
-              console.error('❌ Backend fallback also failed:', backendErr);
+            } catch (_) {
             }
           }
-          
-          console.log('=== DOCUMENT UPLOAD END ===');
         }
 
         // 4. Linked Parties - Simplified and more reliable
@@ -345,55 +285,61 @@ const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
 
         if (onRefresh) onRefresh(); 
         if (selectedFile && documentUploadSuccess) {
-          alert("🎉 CASE & FILE UPLOAD SUCCESSFUL!\n\n📋 VERIFICATION CHECKLIST:\n1. Open MinIO Console: http://localhost:9000\n2. Go to bucket: pcrs-file\n3. Navigate to: cases → " + canonicalCaseId + "\n4. Look for file: " + (selectedFile?.name || "your-file.pdf") + "\n\n⚠️ If file is missing, backend is NOT uploading to MinIO!");
+          alert(`${t(language, 'caseRegisteredSuccessfully')}\n\n✅ ${t(language, 'uploading')} ${selectedFile?.name || ''}\n\n📋 VERIFICATION CHECKLIST:\n1. Open MinIO Console: http://localhost:9001\n2. Go to bucket: pcrs-file\n3. Navigate to: cases → ${canonicalCaseId}\n4. Look for file: ${selectedFile?.name || "your-file.pdf"}`);
         } else if (selectedFile) {
-          alert("CASE REGISTERED SUCCESSFULLY\n\n❌ File upload failed - check console for details\n🔧 Backend may not be uploading to MinIO");
+          alert(`${t(language, 'caseRegisteredSuccessfully')}\n\n❌ ${t(language, 'fileUploadFailed')}`);
         } else {
-          alert("CASE REGISTERED SUCCESSFULLY");
+          alert(t(language, 'caseRegisteredSuccessfully'));
         }
         navigate('/dashboard');
       }
     } catch (err: any) {
       const errorDetail = err.response?.data?.message || err.message;
-      alert(`REGISTRY ERROR: ${errorDetail}`);
+      alert(`${t(language, 'registryError')}: ${errorDetail}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#020617] text-white p-8 font-sans">
+    <div className="min-h-screen bg-[color:var(--pcrs-bg)] text-[color:var(--pcrs-text)] p-8 font-sans">
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-12">
           <button onClick={() => navigate('/dashboard')} className="group flex items-center gap-2 text-slate-500 hover:text-white transition-all text-[10px] font-black uppercase tracking-[0.3em]">
-            <ChevronLeft size={16}/> Back to Command
+            <ChevronLeft size={16}/> {t(language, 'backToCommand')}
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
-            <div className="bg-[#0f172a]/50 border border-slate-800 rounded-[2.5rem] p-10 relative overflow-hidden">
+            <div className="bg-[color:var(--pcrs-surface)] border border-[color:var(--pcrs-border)] rounded-[2.5rem] p-10 relative overflow-hidden">
               <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-600"></div>
               <h1 className="text-5xl font-black italic uppercase tracking-tighter mb-8">
-                Case <span className="text-blue-600">Registration</span>
+                {language === 'en' ? (
+                  <>
+                    Case <span className="text-blue-600">Registration</span>
+                  </>
+                ) : (
+                  <span className="text-blue-600">{t(language, 'caseRegistration')}</span>
+                )}
               </h1>
               
               <div className="space-y-6">
-                <input name="title" required placeholder="CASE TITLE" className="w-full bg-black/40 border border-slate-800 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold uppercase text-sm" onChange={handleChange} />
+                <input name="title" required placeholder={t(language, 'caseTitlePlaceholder')} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-2xl outline-none focus:border-blue-500 font-bold uppercase text-sm text-[color:var(--pcrs-text)]" onChange={handleChange} />
                 
                 <div className="grid grid-cols-2 gap-6">
-                  <select name="caseType" className="w-full bg-black/40 border border-slate-800 p-4 rounded-2xl outline-none" onChange={handleChange}>
-                    <option value="Theft">Theft</option>
-                    <option value="Fraud">Fraud</option>
-                    <option value="Assault">Assault</option>
-                    <option value="Cybercrime">Cybercrime</option>
+                  <select name="caseType" className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-2xl outline-none text-[color:var(--pcrs-text)]" onChange={handleChange}>
+                    <option value="Theft">{t(language, 'theft')}</option>
+                    <option value="Fraud">{t(language, 'fraud')}</option>
+                    <option value="Assault">{t(language, 'assault')}</option>
+                    <option value="Cybercrime">{t(language, 'cybercrime')}</option>
                   </select>
-                  <input type="date" name="registrationDate" value={formData.registrationDate} className="w-full bg-black/40 border border-slate-800 p-4 rounded-2xl outline-none" onChange={handleChange} />
+                  <input type="date" name="registrationDate" value={formData.registrationDate} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-2xl outline-none text-[color:var(--pcrs-text)]" onChange={handleChange} />
                 </div>
                 
-                <input name="location" placeholder="LOCATION" className="w-full bg-black/40 border border-slate-800 p-4 rounded-2xl outline-none font-bold uppercase text-sm" onChange={handleChange} />
+                <input name="location" placeholder={t(language, 'locationPlaceholder')} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-2xl outline-none font-bold uppercase text-sm text-[color:var(--pcrs-text)]" onChange={handleChange} />
                 
-                <textarea name="caseDescription" placeholder="NARRATIVE" className="w-full bg-black/40 border border-slate-800 p-4 rounded-2xl outline-none h-32 text-sm" onChange={handleChange} />
+                <textarea name="caseDescription" placeholder={t(language, 'narrativePlaceholder')} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-2xl outline-none h-32 text-sm text-[color:var(--pcrs-text)]" onChange={handleChange} />
 
                 {/* --- NEW FILE UPLOAD SECTION --- */}
                 <div className="bg-blue-600/10 border border-dashed border-slate-700 p-6 rounded-3xl group hover:border-blue-500 transition-all">
@@ -402,14 +348,14 @@ const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
                       <FileUp size={20} />
                     </div>
                     <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-blue-500 mb-1">Evidence Attachment</p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-blue-500 mb-1">{t(language, 'evidenceAttachment')}</p>
                       <input 
                         type="file" 
                         onChange={handleFileChange}
                         className="text-xs text-slate-500 file:hidden cursor-pointer w-full" 
                       />
                       {selectedFile && (
-                        <p className="text-[10px] font-bold text-emerald-500 mt-2 uppercase">Selected: {selectedFile.name}</p>
+                        <p className="text-[10px] font-bold text-emerald-500 mt-2 uppercase">{t(language, 'selected')}: {selectedFile.name}</p>
                       )}
                     </div>
                   </div>
@@ -419,19 +365,19 @@ const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
           </div>
 
           <div className="space-y-6">
-            <div className="bg-[#1e293b]/30 border border-slate-800 rounded-[2.5rem] p-8">
+            <div className="bg-[color:var(--pcrs-surface)] border border-[color:var(--pcrs-border)] rounded-[2.5rem] p-8">
               <h3 className="text-xs font-black text-blue-500 uppercase tracking-[0.2em] mb-6 flex items-center gap-2">
-                <UserPlus size={16}/> Involved Parties
+                <UserPlus size={16}/> {t(language, 'involvedParties')}
               </h3>
               <div className="space-y-4 mb-6">
-                <input name="fullName" value={currentParty.fullName} placeholder="NAME" className="w-full bg-black/40 border border-slate-800 p-4 rounded-xl text-xs uppercase outline-none focus:border-blue-500" onChange={handlePartyChange} />
-                <input name="phoneNumber" value={currentParty.phoneNumber} type="text" placeholder="PHONE" className="w-full bg-black/40 border border-slate-800 p-4 rounded-xl text-xs outline-none focus:border-blue-500" onChange={handlePartyChange} />
-                <select name="partyType" value={currentParty.partyType} className="w-full bg-black/40 border border-slate-800 p-4 rounded-xl text-xs outline-none" onChange={handlePartyChange}>
-                  <option value="Complainant">Complainant</option>
-                  <option value="Suspect">Suspect</option>
-                  <option value="Witness">Witness</option>
+                <input name="fullName" value={currentParty.fullName} placeholder={t(language, 'namePlaceholder')} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-xl text-xs uppercase outline-none focus:border-blue-500 text-[color:var(--pcrs-text)]" onChange={handlePartyChange} />
+                <input name="phoneNumber" value={currentParty.phoneNumber} type="text" placeholder={t(language, 'phonePlaceholder')} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-xl text-xs outline-none focus:border-blue-500 text-[color:var(--pcrs-text)]" onChange={handlePartyChange} />
+                <select name="partyType" value={currentParty.partyType} className="w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-4 rounded-xl text-xs outline-none text-[color:var(--pcrs-text)]" onChange={handlePartyChange}>
+                  <option value="Complainant">{t(language, 'complainant')}</option>
+                  <option value="Suspect">{t(language, 'suspect')}</option>
+                  <option value="Witness">{t(language, 'witness')}</option>
                 </select>
-                <button type="button" onClick={addPartyToList} className="w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors">Add Person</button>
+                <button type="button" onClick={addPartyToList} className="w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors">{t(language, 'addPerson')}</button>
               </div>
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {parties.map((p, i) => (
@@ -444,7 +390,7 @@ const CaseRegistration: React.FC<CaseRegistrationProps> = ({ onRefresh }) => {
             </div>
             
             <button type="submit" disabled={isSubmitting} className="w-full py-5 bg-blue-600 rounded-2xl font-black text-[10px] uppercase tracking-[0.3em] hover:bg-blue-500 transition-all shadow-xl shadow-blue-600/20">
-              {isSubmitting ? "Syncing to Registry..." : "Commit to Registry"}
+              {isSubmitting ? t(language, 'syncingToRegistry') : t(language, 'commitToRegistry')}
             </button>
           </div>
         </form>

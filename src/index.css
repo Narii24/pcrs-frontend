@@ -2,10 +2,68 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --pcrs-bg: #020617;
+  --pcrs-text: #ffffff;
+  --pcrs-surface: #0b1220;
+  --pcrs-surface-2: #0a0c14;
+  --pcrs-border: rgba(255, 255, 255, 0.08);
+  --pcrs-muted: rgba(255, 255, 255, 0.55);
+  --pcrs-header: rgba(6, 8, 15, 0.5);
+  --pcrs-scrollbar-thumb: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme='light'] {
+  --pcrs-bg: #f8fafc;
+  --pcrs-text: #0f172a;
+  --pcrs-surface: #ffffff;
+  --pcrs-surface-2: #f1f5f9;
+  --pcrs-border: rgba(15, 23, 42, 0.12);
+  --pcrs-muted: rgba(15, 23, 42, 0.6);
+  --pcrs-header: rgba(255, 255, 255, 0.8);
+  --pcrs-scrollbar-thumb: rgba(15, 23, 42, 0.18);
+}
+
+[data-theme='light'] .bg-\[\#020617\] { background-color: var(--pcrs-bg) !important; }
+[data-theme='light'] .bg-\[\#020617\].text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-\[\#0b1220\] { background-color: var(--pcrs-surface) !important; }
+[data-theme='light'] .bg-\[\#0b1220\].text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-\[\#0a0c14\] { background-color: var(--pcrs-surface-2) !important; }
+[data-theme='light'] .bg-\[\#0a0c14\].text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-\[\#0f111a\] { background-color: var(--pcrs-surface) !important; }
+[data-theme='light'] .bg-\[\#0f111a\].text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-\[\#03091B\] { background-color: var(--pcrs-bg) !important; }
+[data-theme='light'] .bg-\[\#03091B\].text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-\[\#0a1929\] { background-color: var(--pcrs-surface-2) !important; }
+[data-theme='light'] .bg-\[\#0a1929\].text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-\[\#0F172A\]\/60 { background-color: rgba(255, 255, 255, 0.7) !important; }
+[data-theme='light'] .bg-\[\#0F172A\]\/40 { background-color: rgba(255, 255, 255, 0.6) !important; }
+[data-theme='light'] .border-slate-800 { border-color: var(--pcrs-border) !important; }
+[data-theme='light'] .border-white\/5 { border-color: var(--pcrs-border) !important; }
+[data-theme='light'] .border-white\/10 { border-color: var(--pcrs-border) !important; }
+[data-theme='light'] .bg-slate-900\/40 { background-color: rgba(15, 23, 42, 0.04) !important; }
+[data-theme='light'] .bg-slate-800\/40 { background-color: rgba(15, 23, 42, 0.06) !important; }
+[data-theme='light'] .bg-slate-800\/30 { background-color: rgba(15, 23, 42, 0.06) !important; }
+[data-theme='light'] .bg-slate-800\/60 { background-color: rgba(15, 23, 42, 0.08) !important; }
+[data-theme='light'] .bg-slate-800\/80 { background-color: rgba(15, 23, 42, 0.1) !important; }
+[data-theme='light'] .bg-slate-800 { background-color: rgba(15, 23, 42, 0.08) !important; }
+[data-theme='light'] .bg-black\/80 { background-color: rgba(15, 23, 42, 0.5) !important; }
+[data-theme='light'] .border-slate-700 { border-color: var(--pcrs-border) !important; }
+[data-theme='light'] .border-slate-700\/50 { border-color: var(--pcrs-border) !important; }
+[data-theme='light'] .border-slate-700\/60 { border-color: var(--pcrs-border) !important; }
+[data-theme='light'] .text-slate-300 { color: rgba(15, 23, 42, 0.75) !important; }
+[data-theme='light'] .text-slate-400 { color: rgba(15, 23, 42, 0.65) !important; }
+[data-theme='light'] .text-slate-500 { color: rgba(15, 23, 42, 0.55) !important; }
+[data-theme='light'] .text-gray-400 { color: rgba(15, 23, 42, 0.6) !important; }
+[data-theme='light'] .text-gray-500 { color: rgba(15, 23, 42, 0.55) !important; }
+[data-theme='light'] .text-gray-600 { color: rgba(15, 23, 42, 0.5) !important; }
+[data-theme='light'] .bg-slate-800\/30.text-white { color: var(--pcrs-text) !important; }
+[data-theme='light'] .bg-slate-800\/80.text-slate-400 { color: var(--pcrs-text) !important; }
+
 body {
   margin: 0;
-  background: #0f172a; 
-  color: white;
+  background: var(--pcrs-bg);
+  color: var(--pcrs-text);
   font-family: 'Inter', sans-serif;
   overflow-x: hidden;
   overflow-y: auto;
@@ -38,4 +96,4 @@ body {
 .border-total { border-bottom: 4px solid #8b5cf6; box-shadow: 0 10px 20px -10px #8b5cf6; }
 
 .custom-scrollbar::-webkit-scrollbar { width: 5px; }
-.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: var(--pcrs-scrollbar-thumb); border-radius: 10px; }

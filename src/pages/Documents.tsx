@@ -3,6 +3,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
 import { getPresignedUpload, recordDocument, presignEnabled } from '../services/storageService';
+import { usePreferencesStore, t } from '../stores/preferencesStore';
 
 interface DocumentDTO {
   documentId: string;
@@ -17,6 +18,7 @@ const Documents = () => {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { language } = usePreferencesStore();
 
   const [documents, setDocuments] = useState<DocumentDTO[]>([]);
   const [cases, setCases] = useState<any[]>([]);
@@ -102,7 +104,7 @@ const Documents = () => {
 
       if (!response) {
         if (!documentId) {
-          alert("Intelligence Access Denied: File binary not found.");
+          alert(t(language, 'intelligenceAccessDeniedFileBinaryNotFound'));
           return;
         }
 
@@ -125,7 +127,7 @@ const Documents = () => {
       const fileURL = URL.createObjectURL(new Blob([response.data], { type: contentType }));
       window.open(fileURL, '_blank');
     } catch (err) {
-      alert("Intelligence Access Denied: File binary not found.");
+      alert(t(language, 'intelligenceAccessDeniedFileBinaryNotFound'));
     }
   };
 
@@ -153,7 +155,7 @@ const Documents = () => {
 
       if (!response) {
         if (!documentId) {
-          alert("Uplink Failure: Could not download document.");
+          alert(t(language, 'uplinkFailureCouldNotDownload'));
           return;
         }
 
@@ -185,7 +187,7 @@ const Documents = () => {
       link.click();
       link.remove();
     } catch (err) {
-      alert("Uplink Failure: Could not download document.");
+      alert(t(language, 'uplinkFailureCouldNotDownload'));
     }
   };
 
@@ -282,7 +284,7 @@ const Documents = () => {
       setShowModal(false);
       fetchDocuments();
     } catch (err) {
-      alert("Submit Entry Failed.");
+      alert(t(language, 'submitEntryFailed'));
     }
   };
 
@@ -339,12 +341,12 @@ const Documents = () => {
       <div className="flex justify-between items-center bg-[#0a0c14] p-6 rounded-3xl border border-white/5 shadow-xl">
         <div className="flex items-center gap-4">
           <div className="w-1.5 h-8 bg-blue-600 rounded-full"></div>
-          <h2 className="text-2xl font-black italic uppercase tracking-tighter">Document Archive</h2>
+          <h2 className="text-2xl font-black italic uppercase tracking-tighter">{t(language, 'documentArchiveTitle')}</h2>
         </div>
         <div className="flex items-center gap-3">
           <input 
             type="text" 
-            placeholder="Filter Intelligence..." 
+            placeholder={t(language, 'filterIntelligencePlaceholder')} 
             className="bg-white/5 border border-white/10 rounded-xl py-2 px-4 text-xs outline-none focus:border-blue-500 w-64"
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -353,7 +355,7 @@ const Documents = () => {
             onClick={handleOpenModal} 
             className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase transition-all"
           >
-            + Document
+            {t(language, 'addDocument')}
           </button>
         </div>
       </div>
@@ -363,11 +365,11 @@ const Documents = () => {
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-white/[0.02] text-[10px] font-black uppercase tracking-[0.15em] text-blue-500/70 italic">
-              <th className="p-5">documentId</th>
-              <th className="p-5">caseId</th>
-              <th className="p-5">type / File Name</th>
-              <th className="p-5">Storage</th>
-              <th className="p-5 text-right">Actions</th>
+              <th className="p-5">{t(language, 'documentIdLabel')}</th>
+              <th className="p-5">{t(language, 'caseIdLabel')}</th>
+              <th className="p-5">{t(language, 'typeFileName')}</th>
+              <th className="p-5">{t(language, 'storage')}</th>
+              <th className="p-5 text-right">{t(language, 'actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
@@ -375,12 +377,12 @@ const Documents = () => {
               const c = block.caseData;
               const caseLabel = block.caseId;
               const title =
-                (c && (c.title || c.caseTitle || c.case_title)) || 'UNKNOWN CASE';
+                (c && (c.title || c.caseTitle || c.case_title)) || t(language, 'unknownCase');
               const status =
                 (c &&
                   (c.currentStatus ||
                     c.current_status ||
-                    c.status)) || 'Unknown';
+                    c.status)) || t(language, 'unknown');
 
               return (
                 <Fragment key={caseLabel}>
@@ -389,13 +391,13 @@ const Documents = () => {
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="text-[10px] font-mono text-blue-400 font-bold uppercase tracking-widest">
-                            Case: {caseLabel}
+                            {t(language, 'caseLabel')}: {caseLabel}
                           </div>
                           <div className="text-sm font-black uppercase text-white">
                             {title}
                           </div>
                           <div className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em]">
-                            Status: {status}
+                            {t(language, 'statusLabel')}: {status}
                           </div>
                         </div>
                       </div>
@@ -430,13 +432,13 @@ const Documents = () => {
                           onClick={() => handleViewDocument(doc)}
                           className="bg-white/5 hover:bg-white/10 text-white px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all"
                         >
-                          View Document
+                          {t(language, 'viewDocument')}
                         </button>
                         <button
                           onClick={() => handleDownloadDocument(doc)}
                           className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-blue-600/20"
                         >
-                          Download
+                          {t(language, 'download')}
                         </button>
                       </td>
                     </tr>
@@ -460,12 +462,12 @@ const Documents = () => {
               className="bg-[#0f111a] border border-white/10 w-full max-w-2xl rounded-[2.5rem] overflow-hidden shadow-2xl"
             >
               <div className="bg-blue-600 p-6">
-                <h3 className="text-xl font-black italic text-white uppercase tracking-tighter">New Document Uplink</h3>
+                <h3 className="text-xl font-black italic text-white uppercase tracking-tighter">{t(language, 'newDocumentUplink')}</h3>
               </div>
               <form onSubmit={handleSubmit} className="p-8 space-y-6">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">documentId</label>
+                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">{t(language, 'documentIdLabel')}</label>
                     <input 
                       name="documentId" value={formData.documentId} 
                       className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-white text-xs outline-none focus:border-blue-500" 
@@ -473,7 +475,7 @@ const Documents = () => {
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">caseId</label>
+                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">{t(language, 'caseIdLabel')}</label>
                     <input 
                       name="caseId" value={formData.caseId} 
                       className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-white text-xs outline-none focus:border-blue-500"
@@ -484,19 +486,19 @@ const Documents = () => {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">typeofdocument</label>
+                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">{t(language, 'typeofdocument')}</label>
                     <select 
                       className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-white text-xs outline-none"
                       value={formData.typeOfDocument}
                       onChange={(e) => setFormData({...formData, typeOfDocument: e.target.value})}
                     >
-                      <option>Identification</option>
-                      <option>Forensic Report</option>
-                      <option>Legal Warrant</option>
+                      <option value="Identification">{t(language, 'documentTypeIdentification')}</option>
+                      <option value="Forensic Report">{t(language, 'documentTypeForensicReport')}</option>
+                      <option value="Legal Warrant">{t(language, 'documentTypeLegalWarrant')}</option>
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">storage location</label>
+                    <label className="text-[10px] font-black text-gray-500 uppercase mb-2 block">{t(language, 'storageLocation')}</label>
                     <input 
                       value={formData.locationOfTheStorage} 
                       className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-white text-xs outline-none focus:border-blue-500"
@@ -512,13 +514,13 @@ const Documents = () => {
                   <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => setFormData({...formData, file: e.target.files?.[0] || null})} />
                   <span className="text-2xl">📤</span>
                   <p className="text-[10px] font-black uppercase text-gray-400">
-                    {formData.file ? formData.file.name : "Select or Drag Document Binary"}
+                    {formData.file ? formData.file.name : t(language, 'selectOrDragDocumentBinary')}
                   </p>
                 </div>
 
                 <div className="flex justify-end items-center gap-6 pt-4">
-                  <button type="button" onClick={() => setShowModal(false)} className="text-gray-500 text-[10px] font-black uppercase hover:text-white transition-colors">Abort</button>
-                  <button type="submit" className="bg-blue-600 text-white px-10 py-3 rounded-2xl font-black text-[11px] uppercase shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-all">Submit Entry</button>
+                  <button type="button" onClick={() => setShowModal(false)} className="text-gray-500 text-[10px] font-black uppercase hover:text-white transition-colors">{t(language, 'abort')}</button>
+                  <button type="submit" className="bg-blue-600 text-white px-10 py-3 rounded-2xl font-black text-[11px] uppercase shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-all">{t(language, 'submitEntry')}</button>
                 </div>
               </form>
             </motion.div>

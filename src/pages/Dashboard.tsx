@@ -1,10 +1,11 @@
 import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Activity, PlusCircle, BarChart3, Zap, ChevronRight, Search, UserCheck, UserMinus, X, FileText } from 'lucide-react';
+import { Activity, PlusCircle, BarChart3, Zap, ChevronRight, UserCheck, UserMinus, X, FileText } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import CaseDetails from '@/pages/CaseDetails';
 import api from '@/services/api';
-import { listDocuments } from '../services/Document';
+import { useAuthStore } from '@/stores/authStore';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 
 interface AssignmentRecord {
   assignmentId: number;
@@ -30,12 +31,67 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
   console.log('DEBUG: Dashboard received cases:', cases.length);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { token, isAuthenticated } = useAuthStore() as any;
+  const { theme, language } = usePreferencesStore();
   const [assignments, setAssignments] = React.useState<AssignmentRecord[]>([]);
   const [users, setUsers] = React.useState<Investigator[]>([]);
-  const [documents, setDocuments] = React.useState<any[]>([]);
   const [showSummary, setShowSummary] = React.useState(false);
   const [openCaseId, setOpenCaseId] = React.useState<string | null>(null);
   const [localCases, setLocalCases] = React.useState<any[]>([]);
+
+  const usersForbiddenRef = React.useRef(false);
+
+  const getCaseId = React.useCallback((c: any) => {
+    const raw = c?.caseId ?? c?.case_id ?? c?.id ?? c?._id ?? c?.uuid ?? '';
+    return String(raw || '').trim();
+  }, []);
+
+  const getCaseNumber = React.useCallback((c: any) => {
+    const raw = c?.caseNumber ?? c?.case_number ?? '';
+    return String(raw || '').trim();
+  }, []);
+
+  const getPreferredCaseId = React.useCallback(
+    (c: any) => {
+      const num = getCaseNumber(c);
+      if (num) return num.toUpperCase().startsWith('C-') ? num : `C-${num}`;
+      const id = getCaseId(c);
+      if (id) return id;
+      return '';
+    },
+    [getCaseId, getCaseNumber]
+  );
+
+  const loadAssignmentsFromCache = React.useCallback(() => {
+    const safeReadArray = (key: string) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+
+    let allAssignments = safeReadArray('cached_assignments');
+    const cachedUsers = safeReadArray('cached_users');
+    const pending = safeReadArray('supervisor_pending_assignments');
+
+    if (pending.length > 0) {
+      const pendingFiltered = pending.filter((p: any) => {
+        return !allAssignments.some(
+          (existing: any) =>
+            String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() &&
+            existing.userId === p.userId
+        );
+      });
+      allAssignments = [...allAssignments, ...pendingFiltered];
+    }
+
+    setAssignments(allAssignments);
+    setUsers(cachedUsers);
+  }, []);
 
   // Initialize localCases with cases prop on mount
   React.useEffect(() => {
@@ -58,75 +114,71 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
   React.useEffect(() => {
     const loadAssignments = async () => {
       try {
-        const [assignedRes, usersRes] = await Promise.all([
+        if (!isAuthenticated || !token) {
+          loadAssignmentsFromCache();
+          return;
+        }
+
+        const [assignedRes, usersRes] = await Promise.allSettled([
           api.get('/assignedcases'),
-          api.get('/users'),
+          usersForbiddenRef.current ? Promise.resolve({ data: [] }) : api.get('/users'),
         ]);
 
-        let allAssignments = Array.isArray(assignedRes.data) ? assignedRes.data : [];
-        const allDocuments: any[] = []; // Temporarily empty array
+        const safeReadArray = (key: string) => {
+          try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        };
 
-        // Merge Pending from LocalStorage
-        try {
-            const pendingStr = localStorage.getItem('supervisor_pending_assignments');
-            if (pendingStr) {
-                const pending = JSON.parse(pendingStr);
-                if (Array.isArray(pending)) {
-                     const pendingFiltered = pending.filter((p: any) => {
-                         // strict deduplication
-                         return !allAssignments.some((existing: any) => 
-                             String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() && 
-                             existing.userId === p.userId
-                         );
-                     });
-                     allAssignments = [...allAssignments, ...pendingFiltered];
-                }
-            }
-        } catch (e) {
-            console.error('Failed to parse pending assignments', e);
+        let allAssignments =
+          assignedRes.status === 'fulfilled' && Array.isArray((assignedRes as any).value?.data)
+            ? (assignedRes as any).value.data
+            : safeReadArray('cached_assignments');
+
+        const nextUsers =
+          usersRes.status === 'fulfilled' && Array.isArray((usersRes as any).value?.data)
+            ? (usersRes as any).value.data
+            : safeReadArray('cached_users');
+
+        if (
+          usersRes.status === 'rejected' &&
+          (usersRes as any).reason?.response?.status === 403
+        ) {
+          usersForbiddenRef.current = true;
+        }
+
+        const pending = safeReadArray('supervisor_pending_assignments');
+        if (pending.length > 0) {
+          const pendingFiltered = pending.filter((p: any) => {
+            return !allAssignments.some(
+              (existing: any) =>
+                String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() &&
+                existing.userId === p.userId
+            );
+          });
+          allAssignments = [...allAssignments, ...pendingFiltered];
         }
 
         setAssignments(allAssignments);
-        setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
-        setDocuments(allDocuments);
-        
-        // Cache successful data for fallback when 403 errors occur
-        try {
+        setUsers(nextUsers);
+
+        if (assignedRes.status === 'fulfilled') {
           localStorage.setItem('cached_assignments', JSON.stringify(allAssignments));
-          localStorage.setItem('cached_users', JSON.stringify(Array.isArray(usersRes.data) ? usersRes.data : []));
-        } catch (cacheErr) {
-          console.warn('Failed to cache data:', cacheErr);
+        }
+        if (usersRes.status === 'fulfilled') {
+          localStorage.setItem('cached_users', JSON.stringify(nextUsers));
         }
       } catch (err: any) {
-        console.warn('Dashboard assignment sync failed - Backend may be offline');
-        
-        // Handle 403 Forbidden errors gracefully
-        if (err.response?.status === 403) {
-          console.warn('403 Forbidden - Using cached data and localStorage only');
-          
-          // Try to use cached data from localStorage as fallback
-          try {
-            const cachedAssignments = localStorage.getItem('supervisor_pending_assignments');
-            const cachedUsers = localStorage.getItem('cached_users');
-            
-            if (cachedAssignments) {
-              setAssignments(JSON.parse(cachedAssignments));
-            }
-            
-            if (cachedUsers) {
-              setUsers(JSON.parse(cachedUsers));
-            }
-          } catch (cacheErr) {
-            console.warn('Failed to load cached data:', cacheErr);
-          }
-        } else {
-          // For other errors, try to continue with existing data
-          console.warn('API Error:', err.response?.status, err.response?.data);
-        }
+        loadAssignmentsFromCache();
       }
     };
     loadAssignments();
-  }, []);
+  }, [isAuthenticated, token, loadAssignmentsFromCache]);
 
   // Refresh data when triggered from AdminDashboard
   React.useEffect(() => {
@@ -135,154 +187,164 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
       console.log('Dashboard: Refreshing data due to external trigger');
       const loadAssignments = async () => {
         try {
-          const [assignedRes, usersRes, documentsRes, casesRes] = await Promise.all([
-            api.get('/assignedcases'),
-            api.get('/users'),
-            listDocuments(),
-            api.get('/cases'),
-          ]);
-
-          let allAssignments = Array.isArray(assignedRes.data) ? assignedRes.data : [];
-          const allDocuments = Array.isArray(documentsRes) ? documentsRes : [];
-          const allCases = Array.isArray(casesRes.data) ? casesRes.data : [];
-
-          // Update local cases state to match fresh data
-          if (allCases.length > 0) {
-            // Trigger parent to update cases prop
-            if (onRefresh) {
-              console.log('Dashboard: Triggering parent refresh to update cases');
-              onRefresh();
-            }
+          if (!isAuthenticated || !token) {
+            loadAssignmentsFromCache();
+            return;
           }
 
-          // Merge Pending from LocalStorage
-          try {
-            const pendingStr = localStorage.getItem('supervisor_pending_assignments');
-            if (pendingStr) {
-              const pending = JSON.parse(pendingStr);
-              if (Array.isArray(pending)) {
-                const pendingFiltered = pending.filter((p: any) => {
-                  // strict deduplication
-                  return !allAssignments.some((existing: any) => 
-                    String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() && 
-                    existing.userId === p.userId
-                  );
-                });
-                allAssignments = [...allAssignments, ...pendingFiltered];
-              }
+          if (onRefresh) {
+            console.log('Dashboard: Triggering parent refresh to update cases');
+            onRefresh();
+          }
+
+          const [assignedRes, usersRes] = await Promise.allSettled([
+            api.get('/assignedcases'),
+            usersForbiddenRef.current ? Promise.resolve({ data: [] }) : api.get('/users'),
+          ]);
+
+          const safeReadArray = (key: string) => {
+            try {
+              const raw = localStorage.getItem(key);
+              if (!raw) return [];
+              const parsed = JSON.parse(raw);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
             }
-          } catch (e) {
-            console.error('Failed to parse pending assignments', e);
+          };
+
+          let allAssignments =
+            assignedRes.status === 'fulfilled' && Array.isArray((assignedRes as any).value?.data)
+              ? (assignedRes as any).value.data
+              : safeReadArray('cached_assignments');
+
+          const nextUsers =
+            usersRes.status === 'fulfilled' && Array.isArray((usersRes as any).value?.data)
+              ? (usersRes as any).value.data
+              : safeReadArray('cached_users');
+
+          if (
+            usersRes.status === 'rejected' &&
+            (usersRes as any).reason?.response?.status === 403
+          ) {
+            usersForbiddenRef.current = true;
+          }
+
+          const pending = safeReadArray('supervisor_pending_assignments');
+          if (pending.length > 0) {
+            const pendingFiltered = pending.filter((p: any) => {
+              return !allAssignments.some(
+                (existing: any) =>
+                  String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() &&
+                  existing.userId === p.userId
+              );
+            });
+            allAssignments = [...allAssignments, ...pendingFiltered];
           }
 
           setAssignments(allAssignments);
-          setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
-          setDocuments(allDocuments);
+          setUsers(nextUsers);
+
+          if (assignedRes.status === 'fulfilled') {
+            localStorage.setItem('cached_assignments', JSON.stringify(allAssignments));
+          }
+          if (usersRes.status === 'fulfilled') {
+            localStorage.setItem('cached_users', JSON.stringify(nextUsers));
+          }
         } catch (err) {
-          console.warn('Dashboard refresh failed:', err);
+          loadAssignmentsFromCache();
         }
       };
       loadAssignments();
     }
-  }, [refreshTrigger, onRefresh]);
+  }, [refreshTrigger, onRefresh, isAuthenticated, token, loadAssignmentsFromCache]);
 
   // Real-time sync with localStorage for pending assignments
   React.useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === 'supervisor_pending_assignments') {
         console.log('Dashboard: Detected pending assignments change');
-        const loadAssignments = async () => {
-          try {
-            const [assignedRes, usersRes, documentsRes] = await Promise.all([
-              api.get('/assignedcases'),
-              api.get('/users'),
-              listDocuments(),
-            ]);
-
-            let allAssignments = Array.isArray(assignedRes.data) ? assignedRes.data : [];
-            const allDocuments = Array.isArray(documentsRes) ? documentsRes : [];
-
-            // Merge Pending from LocalStorage
-            try {
-              const pendingStr = localStorage.getItem('supervisor_pending_assignments');
-              if (pendingStr) {
-                const pending = JSON.parse(pendingStr);
-                if (Array.isArray(pending)) {
-                  const pendingFiltered = pending.filter((p: any) => {
-                    // strict deduplication
-                    return !allAssignments.some((existing: any) => 
-                      String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() && 
-                      existing.userId === p.userId
-                    );
-                  });
-                  allAssignments = [...allAssignments, ...pendingFiltered];
-                }
-              }
-            } catch (e) {
-              console.error('Failed to parse pending assignments', e);
-            }
-
-            setAssignments(allAssignments);
-            setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
-            setDocuments(allDocuments);
-          } catch (err) {
-            console.warn('Dashboard storage sync failed:', err);
-          }
-        };
-        loadAssignments();
+        loadAssignmentsFromCache();
       }
     };
 
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
+  }, [loadAssignmentsFromCache]);
 
   // Periodic refresh to ensure Dashboard stays in sync with Supervisor
   React.useEffect(() => {
-    const interval = setInterval(() => {
-      const loadAssignments = async () => {
+    if (!isAuthenticated || !token) return;
+
+    const interval = setInterval(async () => {
+      const [assignedRes, usersRes] = await Promise.allSettled([
+        api.get('/assignedcases'),
+        usersForbiddenRef.current ? Promise.resolve({ data: [] }) : api.get('/users'),
+      ]);
+
+      const isAuthFailure = (res: any) =>
+        res.status === 'rejected' &&
+        (res.reason?.response?.status === 401 || res.reason?.response?.status === 403);
+
+      if (isAuthFailure(assignedRes)) {
+        clearInterval(interval);
+        loadAssignmentsFromCache();
+        return;
+      }
+
+      if (
+        usersRes.status === 'rejected' &&
+        (usersRes as any).reason?.response?.status === 403
+      ) {
+        usersForbiddenRef.current = true;
+      }
+
+      const safeReadArray = (key: string) => {
         try {
-          const [assignedRes, usersRes, documentsRes] = await Promise.all([
-            api.get('/assignedcases'),
-            api.get('/users'),
-            listDocuments(),
-          ]);
-
-          let allAssignments = Array.isArray(assignedRes.data) ? assignedRes.data : [];
-          const allDocuments = Array.isArray(documentsRes) ? documentsRes : [];
-
-          // Merge Pending from LocalStorage
-          try {
-            const pendingStr = localStorage.getItem('supervisor_pending_assignments');
-            if (pendingStr) {
-              const pending = JSON.parse(pendingStr);
-              if (Array.isArray(pending)) {
-                const pendingFiltered = pending.filter((p: any) => {
-                  // strict deduplication
-                  return !allAssignments.some((existing: any) => 
-                    String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() && 
-                    existing.userId === p.userId
-                  );
-                });
-                allAssignments = [...allAssignments, ...pendingFiltered];
-              }
-            }
-          } catch (e) {
-            console.error('Failed to parse pending assignments', e);
-          }
-
-          setAssignments(allAssignments);
-          setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
-          setDocuments(allDocuments);
-        } catch (err) {
-          console.warn('Dashboard periodic refresh failed:', err);
+          const raw = localStorage.getItem(key);
+          if (!raw) return [];
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
         }
       };
-      loadAssignments();
-    }, 5000); // Refresh every 5 seconds
+
+      let allAssignments =
+        assignedRes.status === 'fulfilled' && Array.isArray((assignedRes as any).value?.data)
+          ? (assignedRes as any).value.data
+          : safeReadArray('cached_assignments');
+
+      const nextUsers =
+        usersRes.status === 'fulfilled' && Array.isArray((usersRes as any).value?.data)
+          ? (usersRes as any).value.data
+          : safeReadArray('cached_users');
+
+      const pending = safeReadArray('supervisor_pending_assignments');
+      if (pending.length > 0) {
+        const pendingFiltered = pending.filter((p: any) => {
+          return !allAssignments.some(
+            (existing: any) =>
+              String(existing.caseId).toLowerCase() === String(p.caseId).toLowerCase() &&
+              existing.userId === p.userId
+          );
+        });
+        allAssignments = [...allAssignments, ...pendingFiltered];
+      }
+
+      setAssignments(allAssignments);
+      setUsers(nextUsers);
+
+      if (assignedRes.status === 'fulfilled') {
+        localStorage.setItem('cached_assignments', JSON.stringify(allAssignments));
+      }
+      if (usersRes.status === 'fulfilled') {
+        localStorage.setItem('cached_users', JSON.stringify(nextUsers));
+      }
+    }, 5000); // Refresh every 5 seconds (authenticated only)
 
     return () => clearInterval(interval);
-  }, []);
+  }, [isAuthenticated, token, loadAssignmentsFromCache]);
 
   const userById = React.useMemo(() => {
     const map: Record<string, string> = {};
@@ -322,7 +384,24 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
     return 'bg-blue-600';
   };
 
-  const stats = cases.reduce(
+  const displayCases = React.useMemo(() => {
+    const result: any[] = [];
+    const seen = new Set<string>();
+
+    for (const c of localCases) {
+      const id = getPreferredCaseId(c);
+      const key = id ? id.toLowerCase() : '';
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      result.push(c);
+    }
+
+    return result;
+  }, [getPreferredCaseId, localCases]);
+
+  const sourceCases = displayCases;
+
+  const stats = sourceCases.reduce(
     (acc, c: any) => {
       const status = String(c.currentStatus || '').toLowerCase();
 
@@ -344,7 +423,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
 
   const todaysCases = React.useMemo(
     () =>
-      localCases.filter((c: any) => {
+      sourceCases.filter((c: any) => {
         const raw =
           c.registrationDate ||
           c.registration_date ||
@@ -354,7 +433,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
         const dateOnly = String(raw).slice(0, 10);
         return dateOnly === todayKey;
       }),
-    [localCases, todayKey]
+    [sourceCases, todayKey]
   );
 
   const todayStats = todaysCases.reduce(
@@ -406,10 +485,10 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
   }, [todaysCases]);
 
   const filteredCases = !search
-    ? localCases
-    : localCases.filter((c: any) => {
-        const id = String(c.caseId || '').toLowerCase();
-        const number = String(c.caseNumber || '').toLowerCase();
+    ? sourceCases
+    : sourceCases.filter((c: any) => {
+        const id = getPreferredCaseId(c).toLowerCase();
+        const number = getCaseNumber(c).toLowerCase();
         const title = String(c.title || '').toLowerCase();
         const status = String(c.currentStatus || '').toLowerCase();
         const location = String(c.location || '').toLowerCase();
@@ -440,13 +519,13 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
     <div className="flex-1 space-y-10 animate-in fade-in duration-700 overflow-x-hidden overflow-y-auto">
       
       {/* 1. STAT CARDS SECTION */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <button
           onClick={() => setActiveFilter('new')}
           className="text-left"
         >
           <DarkStatCard
-            label="NEW"
+            label={t(language, 'new')}
             value={stats.new}
             color="text-blue-400"
             isActive={activeFilter === 'new'}
@@ -457,7 +536,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
           className="text-left"
         >
           <DarkStatCard
-            label="IN PROGRESS"
+            label={t(language, 'inProgress')}
             value={stats.progress}
             color="text-yellow-400"
             isActive={activeFilter === 'progress'}
@@ -468,7 +547,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
           className="text-left"
         >
           <DarkStatCard
-            label="CLOSED"
+            label={t(language, 'closed')}
             value={stats.closed}
             color="text-emerald-400"
             isActive={activeFilter === 'closed'}
@@ -479,7 +558,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
           className="text-left"
         >
           <DarkStatCard
-            label="TOTAL"
+            label={t(language, 'total')}
             value={stats.total}
             color="text-purple-400"
             isLast
@@ -494,36 +573,47 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
         {/* LEFT: DEPLOYMENT LIST */}
         <div className="lg:col-span-2 space-y-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-6xl font-black italic uppercase tracking-tighter leading-none">
-              CASE <span className="text-blue-600">DEPLOYMENT</span>
-              <p className="text-[10px] not-italic font-bold text-slate-500 uppercase tracking-[0.5em] mt-2">
-                Operational Hub • Total Activity
+            <h2 className="text-2xl md:text-3xl font-black italic uppercase tracking-tighter leading-none">
+              {language === 'en' ? (
+                <>
+                  CASE <span className="text-blue-600">DEPLOYMENT</span>
+                </>
+              ) : (
+                <span className="text-blue-600">{t(language, 'caseDeployment')}</span>
+              )}
+              <p className="text-[7px] not-italic font-bold text-slate-500 uppercase tracking-[0.5em] mt-0.5">
+                {t(language, 'operationalHubTotalActivity')}
               </p>
             </h2>
-            <div className="p-3 bg-slate-800/40 rounded-xl border border-slate-700">
-              <Search size={20} className="text-slate-400" />
-            </div>
           </div>
 
           <div className="space-y-4">
             {statusFilteredCases.length === 0 ? (
               <div className="p-24 border-2 border-dashed border-slate-800/50 rounded-[3rem] text-center">
-                <p className="text-slate-600 font-black uppercase tracking-widest italic opacity-50">No Active Deployments Found</p>
+                <p className="text-slate-600 font-black uppercase tracking-widest italic opacity-50">{t(language, 'noActiveDeploymentsFound')}</p>
               </div>
             ) : (
               statusFilteredCases.map((c: any) => {
+                const preferredCaseId = getPreferredCaseId(c);
+                const preferredCaseNumber = getCaseNumber(c);
                 const progress = getProgressPercent(c.currentStatus);
                 
                 // ROBUST ASSIGNMENT LOOKUP
-                let assignedNames: string[] = assignmentsByCase[c.caseId] || [];
+                let assignedNames: string[] = assignmentsByCase[preferredCaseId] || [];
+                if (assignedNames.length === 0) {
+                  const rawId = getCaseId(c);
+                  if (rawId && assignmentsByCase[rawId]) {
+                    assignedNames = assignmentsByCase[rawId];
+                  }
+                }
                 
                 // 1. Alias Lookup: Check C- number if UUID has no assignment
                 if (assignedNames.length === 0) {
                    // A. If current ID is UUID, check C- alias
-                   if (!String(c.caseId).startsWith('C-')) {
-                       const cNum = c.caseNumber || (c as any).case_number;
+                   if (!String(preferredCaseId).startsWith('C-')) {
+                       const cNum = preferredCaseNumber;
                        if (cNum) {
-                           const cId = `C-${cNum}`;
+                           const cId = cNum.toUpperCase().startsWith('C-') ? cNum : `C-${cNum}`;
                            assignedNames = assignmentsByCase[cId] || [];
                            
                            // Check numeric ID (without C- prefix) as well
@@ -539,7 +629,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
                            assignedNames = assignmentsByCase[hiddenUuid];
                        }
                        // Also check numeric ID (without C- prefix) just in case
-                       const numericId = String(c.caseId).replace(/^C-/i, '');
+                       const numericId = String(preferredCaseId).replace(/^C-/i, '');
                        if (assignmentsByCase[numericId]) {
                             const numNames = assignmentsByCase[numericId];
                             if (numNames && numNames.length > 0) assignedNames = numNames;
@@ -563,27 +653,32 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
                 const barColor = getProgressColor(c.currentStatus);
 
                 return (
-                  <div key={c.caseId} className="group bg-[#0F172A]/40 border border-slate-800/60 rounded-[2.5rem] p-8 hover:border-blue-600/40 transition-all duration-300">
+                  <div
+                    key={`${preferredCaseId || 'case'}-${preferredCaseNumber || 'num'}-${String(
+                      c.title || ''
+                    )}`}
+                    className="group bg-[#0F172A]/40 border border-slate-800/60 rounded-[2.5rem] p-8 hover:border-blue-600/40 transition-all duration-300"
+                  >
                     <div className="flex justify-between items-start">
                       <div className="space-y-4 w-full mr-6">
                         <div className="flex items-center gap-3">
                           <span className="text-[10px] font-mono text-blue-500 font-bold uppercase tracking-widest">
-                            PCRS-{c.caseId?.substring(0, 8)}
+                            PCRS-{preferredCaseId.substring(0, 8)}
                           </span>
                           
                           {/* ASSIGNED STATUS BADGE */}
                           {isAssigned ? (
                             <div className="flex flex-col items-start gap-1">
                               <span className="flex items-center gap-1 text-[8px] bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-2 py-0.5 rounded font-black uppercase">
-                                <UserCheck size={10} /> Assigned
+                                <UserCheck size={10} /> {t(language, 'assigned')}
                               </span>
                               <span className="text-[8px] text-emerald-300 font-semibold uppercase tracking-widest">
-                                Lead: {assignedNames.join(', ')}
+                                {t(language, 'leadInvestigator')}: {assignedNames.join(', ')}
                               </span>
                             </div>
                           ) : (
                             <div className="flex items-center gap-1 text-[8px] bg-red-500/10 text-red-500 border border-red-500/20 px-2 py-0.5 rounded font-black uppercase">
-                              <UserMinus size={10} /> Unassigned
+                              <UserMinus size={10} /> {t(language, 'unassigned')}
                             </div>
                           )}
 
@@ -602,7 +697,9 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
                         {/* PROGRESS TRACKING */}
                         <div className="space-y-2 max-w-md">
                           <div className="flex justify-between text-[9px] font-black uppercase tracking-widest text-slate-500">
-                             <span>Status: {c.currentStatus || 'Unknown'}</span>
+                             <span>
+                               {t(language, 'statusLabel')}: {c.currentStatus || t(language, 'unknown')}
+                             </span>
                              <span>{progress}%</span>
                           </div>
                           <div className="w-full h-1.5 bg-black rounded-full overflow-hidden border border-white/5">
@@ -616,21 +713,21 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
                         <div className="flex gap-3 pt-2">
                           {/* ANALYZE BUTTON - OPENS MODAL */}
                            <button 
-                            onClick={() => setOpenCaseId(c.caseId)}
+                            onClick={() => setOpenCaseId(preferredCaseId)}
                             className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black px-6 py-2 rounded-lg uppercase tracking-widest transition-all shadow-lg shadow-blue-600/20"
                            >
-                            Analyze
+                            {t(language, 'analyze')}
                            </button>
                         </div>
                       </div>
 
                       <button 
                         onClick={() => {
-                          console.log('Dashboard: Opening case details for:', c.caseId);
+                          console.log('Dashboard: Opening case details for:', preferredCaseId);
                           console.log('Dashboard: Full case object:', c);
-                          setOpenCaseId(c.caseId);
+                          setOpenCaseId(preferredCaseId);
                         }} 
-                        className="p-4 bg-slate-800/30 border border-slate-700 rounded-2xl group-hover:bg-blue-600 transition-all text-white"
+                        className="p-4 bg-slate-800/30 border border-slate-700 rounded-2xl group-hover:bg-blue-600 transition-all text-[color:var(--pcrs-text)]"
                       >
                         <ChevronRight size={24} />
                       </button>
@@ -645,26 +742,26 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
         {/* RIGHT: SYSTEM COMMAND */}
         <div className="space-y-6">
           <div className="bg-[#0F172A]/60 border border-slate-800 rounded-[2.5rem] p-8">
-            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] mb-8 text-center">System Command</h3>
+            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] mb-8 text-center">{t(language, 'systemCommand')}</h3>
             <div className="space-y-4">
               <CommandButton 
-                label="New Case File" 
+                label={t(language, 'newCaseFile')} 
                 icon={<PlusCircle size={18}/>} 
                 primary 
                 onClick={() => navigate('/register-case')}
               />
               <CommandButton 
-                label="Assigned Cases" 
+                label={t(language, 'assignedCases')} 
                 icon={<UserCheck size={18}/>} 
                 onClick={() => navigate('/assign-cases?view=assigned')}
               />
               <CommandButton 
-                label="Document Archive" 
+                label={t(language, 'documentArchive')} 
                 icon={<FileText size={18}/>} 
                 onClick={() => navigate('/assign-cases?view=documents')}
               />
               <CommandButton 
-                label="Export Summary" 
+                label={t(language, 'exportSummary')} 
                 icon={<BarChart3 size={18}/>} 
                 onClick={() => setShowSummary(true)}
               />
@@ -680,17 +777,17 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
             <div className="flex items-center justify-between px-10 py-6 border-b border-slate-800">
               <div>
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.4em]">
-                  Daily Intelligence Export
+                  {t(language, 'dailyIntelligenceExport')}
                 </p>
-                <h2 className="text-3xl md:text-4xl font-black italic tracking-tighter text-white">
-                  Today&apos;s Case Summary
+                <h2 className="text-3xl md:text-4xl font-black italic tracking-tighter text-[color:var(--pcrs-text)]">
+                  {t(language, 'todaysCaseSummary')}
                 </h2>
               </div>
               <button
                 onClick={() => setShowSummary(false)}
                 className="text-[10px] font-black uppercase tracking-[0.2em] px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700"
               >
-                Close
+                {t(language, 'close')}
               </button>
             </div>
 
@@ -698,10 +795,10 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
               <div className="flex-1 flex items-center justify-center p-12">
                 <div className="text-center space-y-3">
                   <p className="text-sm font-bold text-slate-400 uppercase tracking-[0.3em]">
-                    No case activity registered today
+                    {t(language, 'noCaseActivityToday')}
                   </p>
                   <p className="text-xs text-slate-500">
-                    New, in progress, closed and total counters are all zero for today.
+                    {t(language, 'summaryZeroDetail')}
                   </p>
                 </div>
               </div>
@@ -709,22 +806,22 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
               <div className="flex-1 overflow-y-auto custom-scrollbar px-10 py-6 space-y-8">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <SummaryStatCard
-                    label="New Today"
+                    label={t(language, 'newToday')}
                     value={todayStats.new}
                     accent="text-blue-400"
                   />
                   <SummaryStatCard
-                    label="In Progress Today"
+                    label={t(language, 'inProgressToday')}
                     value={todayStats.progress}
                     accent="text-yellow-400"
                   />
                   <SummaryStatCard
-                    label="Closed Today"
+                    label={t(language, 'closedToday')}
                     value={todayStats.closed}
                     accent="text-emerald-400"
                   />
                   <SummaryStatCard
-                    label="Total Cases Today"
+                    label={t(language, 'totalCasesToday')}
                     value={todayStats.total}
                     accent="text-purple-400"
                   />
@@ -732,17 +829,17 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <SummaryColumn
-                    title="New Cases Today"
+                    title={t(language, 'newCasesToday')}
                     accent="text-blue-400"
                     cases={todaysBuckets.new}
                   />
                   <SummaryColumn
-                    title="In Progress Today"
+                    title={t(language, 'inProgressCasesToday')}
                     accent="text-yellow-400"
                     cases={todaysBuckets.progress}
                   />
                   <SummaryColumn
-                    title="Closed Today"
+                    title={t(language, 'closedCasesToday')}
                     accent="text-emerald-400"
                     cases={todaysBuckets.closed}
                   />
@@ -768,7 +865,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={e => e.stopPropagation()}
-              className="w-full max-w-6xl h-[90vh] bg-[#020617] border border-slate-800 rounded-[2.5rem] overflow-hidden relative shadow-2xl flex flex-col"
+              className="w-full max-w-6xl h-[90vh] bg-[color:var(--pcrs-bg)] border border-[color:var(--pcrs-border)] rounded-[2.5rem] overflow-hidden relative shadow-2xl flex flex-col"
             >
               <div className="absolute top-6 right-6 z-10">
                 <button
@@ -783,16 +880,12 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
                   caseId={openCaseId}
                   embedded
                   onClose={() => setOpenCaseId(null)}
+                  theme={theme}
                   onCaseUpdated={() => {
                     console.log('Dashboard: onCaseUpdated called from CaseDetails');
                     if (onRefresh) {
                       console.log('Dashboard: Calling onRefresh');
                       onRefresh();
-                      // Force immediate local update by setting localCases directly
-                      setTimeout(() => {
-                        console.log('Dashboard: Force updating localCases after refresh');
-                        setLocalCases(cases);
-                      }, 100);
                     } else {
                       console.log('Dashboard: onRefresh is undefined');
                     }
@@ -808,21 +901,32 @@ const Dashboard: React.FC<DashboardProps> = ({ cases = [], onRefresh, refreshTri
 };
 
 // Sub-components
-const DarkStatCard = ({ label, value, color, isLast, isActive }: any) => (
-  <div
-    className={`relative bg-[#0F172A]/60 border rounded-[2.5rem] p-10 overflow-hidden transition-all ${
-      isActive
-        ? 'border-blue-500/60 shadow-[0_0_40px_rgba(59,130,246,0.3)]'
-        : isLast
-        ? 'border-blue-500/40 shadow-[0_0_30px_rgba(59,130,246,0.1)]'
-        : 'border-slate-800/80'
-    } hover:border-blue-500/40`}
-  >
-    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.3em] mb-2">{label}</p>
-    <p className={`text-7xl font-black tracking-tighter ${color}`}>{value}</p>
-    <Activity className="absolute top-6 right-6 text-slate-800/50" size={32} />
-  </div>
-);
+const DarkStatCard = ({ label, value, color, isLast, isActive }: any) => {
+  const { theme } = usePreferencesStore();
+  const isLight = theme === 'light';
+  const baseBg = isLight ? 'bg-[color:var(--pcrs-surface)]' : 'bg-[#0F172A]/60';
+  const baseBorder = isLight ? 'border-[color:var(--pcrs-border)]' : 'border-slate-800/80';
+  const iconColor = isLight ? 'text-slate-300' : 'text-slate-800/50';
+  const borderState = isActive
+    ? 'border-blue-500/60 shadow-[0_0_40px_rgba(59,130,246,0.3)]'
+    : isLast
+      ? 'border-blue-500/40 shadow-[0_0_30px_rgba(59,130,246,0.1)]'
+      : baseBorder;
+
+  return (
+    <div
+      className={`relative ${baseBg} border ${borderState} rounded-[2rem] p-5 overflow-hidden transition-all hover:border-blue-500/40`}
+    >
+      <p className="text-[7px] font-bold text-slate-500 uppercase tracking-[0.3em] mb-1">
+        {label}
+      </p>
+      <p className={`text-3xl md:text-4xl font-black tracking-tighter ${color}`}>
+        {value}
+      </p>
+      <Activity className={`absolute top-3 right-3 ${iconColor}`} size={20} />
+    </div>
+  );
+};
 
 const CommandButton = ({ label, icon, primary, onClick }: any) => (
   <button 
@@ -860,13 +964,15 @@ const SummaryColumn = ({ title, accent, cases }: any) => (
       <div className="space-y-3">
         {cases.map((c: any) => (
           <button
-            key={c.caseId}
+            key={`${String(c.caseId ?? c.case_id ?? c.id ?? '').trim()}-${String(c.caseNumber ?? c.case_number ?? '').trim()}-${String(
+              c.title || ''
+            )}`}
             onClick={() => {}}
             className="w-full text-left bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3 hover:border-blue-500/50 hover:bg-slate-900 flex flex-col gap-1"
           >
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-mono text-blue-400 font-bold uppercase tracking-widest">
-                PCRS-{String(c.caseId || '').substring(0, 8)}
+                PCRS-{String(c.caseId ?? c.case_id ?? c.id ?? '').trim().substring(0, 8)}
               </span>
             </div>
             <p className="text-xs font-semibold text-slate-100 truncate">

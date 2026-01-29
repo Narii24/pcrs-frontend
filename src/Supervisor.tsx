@@ -5,8 +5,10 @@ import { X } from 'lucide-react';
 import api from '@/services/api';
 import { useAuthStore } from '@/stores/authStore';
 import CaseDetails from '@/pages/CaseDetails';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 
 interface SupervisorProps {
+  cases: any[];
   onRefresh?: () => Promise<void> | void;
   refreshTrigger?: number;
   deletedCases?: Set<string>;
@@ -28,8 +30,11 @@ interface AssignmentRecord {
   timestamp?: number;
 }
 
-const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, deletedCases }) => {
+const Supervisor: React.FC<SupervisorProps> = ({ cases: appCases, onRefresh, refreshTrigger, deletedCases }) => {
   const { userInfo } = useAuthStore() as any;
+  const { language, theme, toggleTheme, setLanguage } = usePreferencesStore();
+  const isLight = theme === 'light';
+  const themeLabel = theme === 'dark' ? t(language, 'brightMode') : t(language, 'darkMode');
   const [cases, setCases] = useState<any[]>([]);
   const [investigators, setInvestigators] = useState<Investigator[]>([]);
   const [assignments, setAssignments] = useState<AssignmentRecord[]>([]);
@@ -39,11 +44,10 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
   const [loading, setLoading] = useState(true);
   const [savingCaseId, setSavingCaseId] = useState<string | null>(null);
   const [savingNumberCaseId, setSavingNumberCaseId] = useState<string | null>(null);
-  const [hasNewCases, setHasNewCases] = useState(false);
+  const [notification, setNotification] = useState<string | null>(null);
   const [visibleColumn, setVisibleColumn] = useState<'both' | 'unassigned' | 'assigned'>('both');
   const [openCaseId, setOpenCaseId] = useState<string | null>(null);
-  // DISABLED BY DEFAULT: User wants to see all database records including potential duplicates
-  const [enableDeduplication, setEnableDeduplication] = useState(false); 
+  const [enableDeduplication, setEnableDeduplication] = useState(true); 
   const [assignmentError, setAssignmentError] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'assigned' | 'unassigned' | 'investigators'>('all');
   
@@ -57,6 +61,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
 
   const pendingAssignmentsRef = useRef<AssignmentRecord[]>(getInitialPending());
   const caseCountRef = useRef<number | null>(null);
+  const lastFingerprintRef = useRef<string | null>(null);
   const username =
     userInfo?.username || userInfo?.preferred_username || '';
   const fallbackInvestigators: Investigator[] = [
@@ -66,8 +71,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
   const loadData = async () => {
     console.log('Supervisor: loadData start');
 
-    const [casesRes, usersRes, assignmentsRes] = await Promise.allSettled([
-      api.get('/cases'),
+    const [usersRes, assignmentsRes] = await Promise.allSettled([
       api.get('/users'),
       api.get('/assignedcases'),
     ]);
@@ -162,26 +166,28 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
     const uuidToNumber = new Map<string, string>();
     let nextCases: any[] = [];
 
-    if (casesRes.status === 'fulfilled') {
-      nextCases = Array.isArray(casesRes.value.data)
-        ? casesRes.value.data
-        : [];
-    } else {
+    nextCases = Array.isArray(appCases) ? appCases : [];
+    if (nextCases.length === 0) {
       try {
         const cached = localStorage.getItem('cached_cases');
         if (cached) {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed)) {
-            console.log(
-              'Supervisor: Loaded cases from offline cache:',
-              parsed.length,
-            );
+            console.log('Supervisor: Loaded cases from offline cache:', parsed.length);
             nextCases = parsed;
           }
         }
       } catch (e) {
         console.warn('Supervisor: Failed to load cached cases');
       }
+    }
+
+    if (deletedCases && deletedCases.size > 0) {
+      nextCases = nextCases.filter(c => {
+        const id = String(c.caseId || c.case_id || c.id || '').trim().toLowerCase();
+        if (!id) return true;
+        return !deletedCases.has(id);
+      });
     }
 
     // Build UUID Map
@@ -364,11 +370,75 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
       return c;
     });
 
-    const newCount = uniqueCases.length;
-    if (caseCountRef.current !== null && newCount > caseCountRef.current) {
-      setHasNewCases(true);
+    const prevCount = caseCountRef.current;
+    const nextCount = uniqueCases.length;
+    caseCountRef.current = nextCount;
+
+    const deriveKey = (c: any) => {
+      const rawId = String(c.caseId || c.case_id || c.id || c._id || '').trim();
+      const idLower = rawId.toLowerCase();
+      const uuidRegexLocal =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (rawId && uuidRegexLocal.test(rawId)) return idLower;
+      const num = String(c.caseNumber || (c as any).case_number || '').trim();
+      if (num) return `c-${num.replace(/\D/g, '') || num}`.toLowerCase();
+      if (rawId && /^c-\d+$/i.test(rawId)) return rawId.toLowerCase();
+      return idLower;
+    };
+
+    const caseSig = uniqueCases
+      .map(c => {
+        const key = deriveKey(c);
+        const title = String(c.title || c.case_title || '').trim().toLowerCase();
+        const status = String(c.currentStatus || c.current_status || c.status || '').trim().toLowerCase();
+        const ts = String(
+          c.updatedAt ||
+            c.updated_at ||
+            c.modifiedAt ||
+            c.modified_at ||
+            c.createdAt ||
+            c.created_at ||
+            c.registrationDate ||
+            c.registration_date ||
+            '',
+        ).trim();
+        const assigned = String(
+          c.assignedInvestigatorId ||
+            c.assigned_investigator_id ||
+            c.assignedInvestigator?.userId ||
+            '',
+        )
+          .trim()
+          .toLowerCase();
+        const assignedNames = Array.isArray(c.assignedNames)
+          ? c.assignedNames.map((n: any) => String(n || '').trim().toLowerCase()).filter(Boolean).sort().join(',')
+          : '';
+        return `${key}|${status}|${title}|${ts}|${assigned}|${assignedNames}`;
+      })
+      .sort()
+      .join(';');
+
+    const assignSig = allAssignmentsForMap
+      .map((a: any) => {
+        const cid = String(a.caseId || '').trim().toLowerCase();
+        const uid = String(a.userId || '').trim().toLowerCase();
+        return `${cid}|${uid}`;
+      })
+      .sort()
+      .join(';');
+
+    const nextFingerprint = `${caseSig}||${assignSig}`;
+    const prevFingerprint = lastFingerprintRef.current;
+    lastFingerprintRef.current = nextFingerprint;
+
+    if (prevCount !== null) {
+      if (nextCount > prevCount) {
+        setNotification('New case registered');
+      } else if (prevFingerprint && nextFingerprint !== prevFingerprint) {
+        setNotification('Registry updated');
+      }
     }
-    caseCountRef.current = newCount;
+
     setCases(uniqueCases);
     setAssignments(allAssignmentsForMap);
     console.log(
@@ -405,12 +475,12 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
   }, [refreshTrigger]);
 
   useEffect(() => {
-    if (!hasNewCases) return;
+    if (!notification) return;
     const timeout = setTimeout(() => {
-      setHasNewCases(false);
+      setNotification(null);
     }, 15000);
     return () => clearTimeout(timeout);
-  }, [hasNewCases]);
+  }, [notification]);
 
   const userById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -1027,17 +1097,17 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
       if (onRefresh) {
         await onRefresh();
       }
-      alert('Case number updated');
+      alert(t(language, 'caseNumberUpdated'));
     } catch (err) {
       console.error('Case number update failed', err);
-      alert('Case number update failed');
+      alert(t(language, 'caseNumberUpdateFailed'));
     } finally {
       setSavingNumberCaseId(null);
     }
   };
 
   return (
-    <div className="bg-[#0f172a] min-h-screen text-white">
+    <div className={`min-h-screen ${isLight ? 'bg-slate-50 text-slate-900' : 'bg-[#0f172a] text-white'}`}>
       <AnimatePresence>
         {loading && (
           <motion.div
@@ -1045,7 +1115,9 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 flex flex-col items-center justify-center bg-[#0f172a] z-20"
+            className={`absolute inset-0 flex flex-col items-center justify-center z-20 ${
+              isLight ? 'bg-slate-50' : 'bg-[#0f172a]'
+            }`}
           >
             <motion.div
               className="w-12 h-12 rounded-full border-4 border-blue-500 border-t-transparent"
@@ -1057,7 +1129,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
             >
-              SYNCING SUPERVISOR CONSOLE
+              {t(language, 'syncingSupervisorConsole')}
             </motion.div>
           </motion.div>
         )}
@@ -1069,20 +1141,24 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4 }}
       >
-        {hasNewCases && (
+        {notification && (
           <motion.div
-            className="mb-4 flex items-center justify-between px-4 py-3 rounded-2xl bg-emerald-600/20 border border-emerald-500 text-[11px] text-emerald-100"
+            className={`mb-4 flex items-center justify-between px-4 py-3 rounded-2xl text-[11px] ${
+              notification === 'New case registered'
+                ? 'bg-emerald-600/20 border border-emerald-500 text-emerald-100'
+                : 'bg-blue-600/15 border border-blue-500 text-blue-100'
+            }`}
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             layout
           >
             <span className="uppercase tracking-[0.25em] text-[9px]">
-              New case registered
+              {notification}
             </span>
             <button
               type="button"
-              onClick={() => setHasNewCases(false)}
-              className="ml-4 text-emerald-200 text-xs font-bold"
+              onClick={() => setNotification(null)}
+              className="ml-4 text-xs font-bold"
             >
               ×
             </button>
@@ -1092,30 +1168,62 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h1 className="text-4xl md:text-5xl font-black italic uppercase tracking-tight">
-                Supervisor <span className="text-blue-500">Console</span>
+                {t(language, 'roleSupervisor')} <span className="text-blue-500">{t(language, 'console')}</span>
               </h1>
               <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.4em] mt-3">
-                Registered Case Registry • Investigator Assignment
+                {t(language, 'supervisorSubtitle')}
               </p>
             </div>
             <motion.div
-              className="bg-[#0f172a] px-3 py-2 rounded-2xl border border-slate-800 flex items-center gap-3 text-xs text-slate-100"
+              className={`px-3 py-2 rounded-2xl border flex items-center gap-3 text-xs ${
+                isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#0f172a] border-slate-800 text-slate-100'
+              }`}
               transition={{ type: 'spring', stiffness: 260, damping: 20 }}
             >
               <div className="flex flex-col">
                 <span className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
-                  Signed In As
+                  {t(language, 'signedInAs')}
                 </span>
                 <span className="text-[11px] font-black">
-                  {userInfo.name || 'Supervisor'} ({username})
+                  {userInfo.name || t(language, 'roleSupervisor')} ({username})
                 </span>
+              </div>
+              <div className="flex items-center gap-2 ml-2">
+                <div className="flex flex-col">
+                  <span className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
+                    {t(language, 'language')}
+                  </span>
+                  <select
+                    value={language}
+                    onChange={e => setLanguage(e.target.value as any)}
+                    className={`h-8 px-2 rounded-lg border text-[10px] font-black uppercase tracking-widest outline-none ${
+                      isLight
+                        ? 'bg-white border-slate-200 text-slate-900'
+                        : 'bg-[#0b1220] border-slate-800 text-slate-100'
+                    }`}
+                  >
+                    <option value="en">EN</option>
+                    <option value="am">AM</option>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className={`h-8 px-3 rounded-lg border text-[10px] font-black uppercase tracking-widest ${
+                    isLight
+                      ? 'bg-slate-50 border-slate-200 text-slate-900 hover:bg-slate-100'
+                      : 'bg-white/5 border-white/10 text-slate-100 hover:bg-white/10'
+                  }`}
+                >
+                  {themeLabel}
+                </button>
               </div>
               <button
                 type="button"
                 onClick={() => useAuthStore.getState().logout()}
                 className="ml-2 px-3 py-1.5 rounded-2xl text-[9px] font-black uppercase tracking-[0.2em] bg-red-600 hover:bg-red-500 text-white"
               >
-                Logout
+                {t(language, 'logout')}
               </button>
             </motion.div>
           </div>
@@ -1128,14 +1236,16 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                 className={`p-6 rounded-[1.75rem] border flex flex-col justify-between relative overflow-hidden group cursor-pointer transition-all duration-300 ${
                   activeFilter === 'all' 
                     ? 'bg-blue-900/20 border-blue-500/50 shadow-lg shadow-blue-900/20' 
-                    : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
+                    : isLight
+                      ? 'bg-white border-slate-200 hover:border-slate-300'
+                      : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
                 }`}
              >
                  <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                      <div className="w-16 h-16 bg-blue-500 rounded-full blur-2xl"></div>
                  </div>
-                 <div className="text-[10px] text-slate-500 font-black uppercase tracking-[0.25em] mb-2">Total Case Load</div>
-                 <div className="text-5xl font-black text-white tracking-tight">{casesWithAssignments.length}</div>
+                 <div className="text-[10px] text-slate-500 font-black uppercase tracking-[0.25em] mb-2">{t(language, 'totalCaseLoad')}</div>
+                 <div className={`text-5xl font-black tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{casesWithAssignments.length}</div>
              </div>
 
              {/* Stats Cards */}
@@ -1144,13 +1254,15 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                 className={`p-6 rounded-[1.75rem] border flex flex-col justify-between cursor-pointer transition-all duration-300 ${
                   activeFilter === 'assigned' 
                     ? 'bg-emerald-900/20 border-emerald-500/50 shadow-lg shadow-emerald-900/20' 
-                    : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
+                    : isLight
+                      ? 'bg-white border-slate-200 hover:border-slate-300'
+                      : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
                 }`}
              >
-                 <div className="text-[10px] text-emerald-600 font-black uppercase tracking-wider mb-2">Assigned Cases</div>
+                 <div className="text-[10px] text-emerald-600 font-black uppercase tracking-wider mb-2">{t(language, 'assignedCases')}</div>
                  <div className="text-3xl font-black text-emerald-400">{stats.assigned}</div>
                  <div className="text-[9px] text-slate-600 font-bold uppercase tracking-wider mt-2">
-                     {Math.round((stats.assigned / (casesWithAssignments.length || 1)) * 100)}% Completion
+                     {Math.round((stats.assigned / (casesWithAssignments.length || 1)) * 100)}% {t(language, 'completion')}
                  </div>
              </div>
 
@@ -1159,12 +1271,14 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                 className={`p-6 rounded-[1.75rem] border flex flex-col justify-between cursor-pointer transition-all duration-300 ${
                   activeFilter === 'unassigned' 
                     ? 'bg-blue-900/20 border-blue-400/50 shadow-lg shadow-blue-900/20' 
-                    : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
+                    : isLight
+                      ? 'bg-white border-slate-200 hover:border-slate-300'
+                      : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
                 }`}
              >
-                 <div className="text-[10px] text-blue-600 font-black uppercase tracking-wider mb-2">Unassigned</div>
+                 <div className="text-[10px] text-blue-600 font-black uppercase tracking-wider mb-2">{t(language, 'unassigned')}</div>
                  <div className="text-3xl font-black text-blue-400">{stats.unassigned}</div>
-                 <div className="text-[9px] text-slate-600 font-bold uppercase tracking-wider mt-2">Action Required</div>
+                 <div className="text-[9px] text-slate-600 font-bold uppercase tracking-wider mt-2">{t(language, 'actionRequired')}</div>
              </div>
 
              {/* Investigator Mini-List */}
@@ -1173,11 +1287,13 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                 className={`p-5 rounded-[1.75rem] border overflow-y-auto max-h-32 custom-scrollbar cursor-pointer transition-all duration-300 ${
                   activeFilter === 'investigators' 
                     ? 'bg-purple-900/20 border-purple-500/50 shadow-lg shadow-purple-900/20' 
-                    : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
+                    : isLight
+                      ? 'bg-white border-slate-200 hover:border-slate-300'
+                      : 'bg-[#0f172a] border-slate-800 hover:border-slate-700'
                 }`}
              >
-                 <div className={`text-[9px] font-black uppercase tracking-[0.25em] mb-3 sticky top-0 pb-2 ${activeFilter === 'investigators' ? 'bg-transparent text-purple-400' : 'bg-[#0f172a] text-slate-500'}`}>
-                    Investigator Load
+                 <div className={`text-[9px] font-black uppercase tracking-[0.25em] mb-3 sticky top-0 pb-2 ${activeFilter === 'investigators' ? 'bg-transparent text-purple-400' : isLight ? 'bg-white text-slate-500' : 'bg-[#0f172a] text-slate-500'}`}>
+                    {t(language, 'investigatorLoad')}
                  </div>
                  <div className="space-y-2">
                     {(investigators.length ? investigators : fallbackInvestigators).map(inv => {
@@ -1217,7 +1333,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
             </div>
           </div>
           
-          <div className="flex items-center gap-2 px-4 py-2 bg-[#0f172a] border border-slate-700 rounded-2xl">
+          <div className={`flex items-center gap-2 px-4 py-2 border rounded-2xl ${isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a] border-slate-700'}`}>
              <label className="flex items-center gap-2 cursor-pointer group select-none">
                 <div className={`w-8 h-4 rounded-full p-0.5 transition-colors duration-300 ${enableDeduplication ? 'bg-blue-600' : 'bg-slate-700'}`}>
                     <div className={`w-3 h-3 bg-white rounded-full transition-transform duration-300 ${enableDeduplication ? 'translate-x-4' : 'translate-x-0'}`} />
@@ -1239,15 +1355,17 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
           </div>
 
           <motion.div
-            className="flex items-center gap-2 bg-[#0f172a] border border-slate-700 rounded-2xl px-4 py-2 text-slate-100"
+            className={`flex items-center gap-2 border rounded-2xl px-4 py-2 ${
+              isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#0f172a] border-slate-700 text-slate-100'
+            }`}
             whileFocus={{ boxShadow: '0 0 25px rgba(59,130,246,0.35)' }}
           >
             <span className="text-[9px] uppercase text-slate-500 font-black tracking-[0.25em]">
-              Filter
+              {t(language, 'filter')}
             </span>
             <input
               type="text"
-              placeholder="Search by case, title, status..."
+              placeholder={t(language, 'searchByCaseTitleStatusPlaceholder')}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               className="bg-transparent border-none outline-none text-[11px] font-semibold placeholder:text-slate-600 w-64"
@@ -1263,7 +1381,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                       String(a.userId) === String(inv.username)
                    );
                    return (
-                       <div key={inv.userId} className="bg-[#0f172a] border border-slate-800 rounded-[2rem] p-6 flex flex-col gap-4 relative overflow-hidden group hover:border-purple-500/50 transition-all">
+                      <div key={inv.userId} className={`border rounded-[2rem] p-6 flex flex-col gap-4 relative overflow-hidden group hover:border-purple-500/50 transition-all ${isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a] border-slate-800'}`}>
                            <div className="flex items-center gap-4">
                                <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-lg font-black text-slate-500 group-hover:bg-purple-500 group-hover:text-white transition-colors">
                                    {inv.firstName ? inv.firstName[0] : (inv.username[0] || '?')}
@@ -1275,8 +1393,8 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                            </div>
                            <div className="mt-4 pt-4 border-t border-slate-800">
                                <div className="flex justify-between items-center mb-2">
-                                   <span className="text-[10px] font-bold uppercase text-slate-500 tracking-widest">Active Cases</span>
-                                   <span className="text-2xl font-black text-white">{invAssignments.length}</span>
+                                  <span className="text-[10px] font-bold uppercase text-slate-500 tracking-widest">{t(language, 'activeCasesLabel')}</span>
+                                  <span className={`text-2xl font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{invAssignments.length}</span>
                                </div>
                                <div className="flex flex-col gap-1 max-h-40 overflow-y-auto custom-scrollbar">
                                    {invAssignments.map(a => (
@@ -1300,7 +1418,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
           <div className="flex flex-col gap-6">
             <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/20 px-4 py-3 rounded-2xl">
               <h3 className="text-sm font-black uppercase tracking-[0.2em] text-blue-400">
-                Unassigned
+                {t(language, 'unassigned')}
               </h3>
               <span className="px-3 py-1 rounded-xl bg-blue-500 text-white text-[10px] font-bold">
                 {stats.unassigned}
@@ -1309,8 +1427,12 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
             
             <div className="flex flex-col gap-4">
               {unassignedCases.length === 0 ? (
-                <div className="text-center py-10 text-slate-500 text-xs uppercase tracking-widest font-bold border border-dashed border-slate-800 rounded-2xl">
-                  No unassigned cases
+                <div
+                  className={`text-center py-10 text-slate-500 text-xs uppercase tracking-widest font-bold border border-dashed rounded-2xl ${
+                    isLight ? 'border-slate-200' : 'border-slate-800'
+                  }`}
+                >
+                  {t(language, 'noUnassignedCasesFound')}
                 </div>
               ) : (
                 unassignedCases.map(c => {
@@ -1323,61 +1445,87 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                   return (
                     <motion.div
                       key={c.caseId}
-                      className="bg-[#0f172a] border border-slate-800 rounded-[1.5rem] p-5 shadow-lg flex flex-col gap-4 relative text-white hover:border-blue-500/30 transition-all"
+                      className={`border rounded-[1.5rem] p-5 shadow-lg flex flex-col gap-4 relative hover:border-blue-500/30 transition-all ${
+                        isLight ? 'bg-white text-slate-900 border-slate-200' : 'bg-[#0f172a] text-white border-slate-800'
+                      }`}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       layout
                     >
                        <div className="flex justify-between items-start gap-2">
-                          <span className="inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-slate-800 text-slate-400">
+                          <span
+                            className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${
+                              isLight ? 'bg-slate-100 text-slate-600' : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
                             {String(c.caseId).startsWith('C-') ? c.caseId : (c.caseNumber ? `C-${c.caseNumber}` : c.caseId.substring(0, 8) + '...')}
                           </span>
-                          <span className="text-[9px] font-bold uppercase text-red-400 bg-red-500/10 px-2 py-1 rounded-lg">Unassigned</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[9px] font-bold uppercase text-red-400 bg-red-500/10 px-2 py-1 rounded-lg">
+                              {t(language, 'unassigned')}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setOpenCaseId(String(c.caseId))}
+                              className={`p-1.5 rounded-lg transition-all ${
+                                isLight
+                                  ? 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                                  : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                              }`}
+                            >
+                              <span className="sr-only">{t(language, 'viewLabel')}</span>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                            </button>
+                          </div>
                        </div>
                        
                        <div>
                           <h2 className="text-lg font-black uppercase tracking-tight leading-tight mb-1">
-                            {c.title || 'Untitled Case'}
+                            {c.title || t(language, 'untitledCase')}
                           </h2>
                           <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                            {c.currentStatus || 'Unknown Status'}
+                            {c.currentStatus || t(language, 'unknownStatus')}
                           </p>
                        </div>
 
                        {/* Case Number Generation (Only for non-C- IDs) */}
                        {(!String(c.caseId).startsWith('C-') && !c.caseNumber) && (
-                        <div className="flex items-center gap-2 pt-2 border-t border-slate-800/50">
+                        <div className={`flex items-center gap-2 pt-2 border-t ${isLight ? 'border-slate-200' : 'border-slate-800/50'}`}>
                            <input
                               type="text"
                               value={draftNumber}
                               placeholder="#"
                               onChange={e => setCaseNumberDrafts(prev => ({ ...prev, [c.caseId]: e.target.value }))}
-                              className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[10px] w-16 text-center outline-none focus:border-blue-500"
+                              className={`border rounded-lg px-2 py-1 text-[10px] w-16 text-center outline-none focus:border-blue-500 ${
+                                isLight ? 'bg-white border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-700 text-white'
+                              }`}
                            />
                            <button
                               onClick={() => handleGenerateCaseNumber(c.caseId)}
                               className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-[9px] font-bold uppercase"
                            >
-                             Gen
+                             {t(language, 'generateLabel')}
                            </button>
                            <button
                               disabled={!draftNumber || savingNumberCaseId === c.caseId}
                               onClick={() => handleSaveCaseNumber(c.caseId)}
                               className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-[9px] font-bold uppercase"
                            >
-                             Save
+                             {t(language, 'saveLabel')}
                            </button>
                         </div>
                        )}
 
-                       <div className="pt-3 mt-auto border-t border-slate-800">
+                       <div className={`pt-3 mt-auto border-t ${isLight ? 'border-slate-200' : 'border-slate-800'}`}>
                           <div className="flex flex-col gap-2">
                              <select
-                                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs outline-none focus:border-blue-500 text-slate-300"
+                                className={`w-full border rounded-xl px-3 py-2 text-xs outline-none focus:border-blue-500 ${
+                                  isLight ? 'bg-white border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-700 text-slate-300'
+                                }`}
                                 value={selectedId}
                                 onChange={e => setSelection(prev => ({ ...prev, [c.caseId]: e.target.value }))}
                               >
-                                <option value="">Select Investigator...</option>
+                                <option value="">{t(language, 'selectInvestigatorPlaceholder')}</option>
                                 {(investigators.length ? investigators : fallbackInvestigators).map(u => (
                                   <option key={u.userId} value={u.userId}>
                                     {u.name || u.username || u.userId}
@@ -1387,9 +1535,11 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                               <button
                                 disabled={!selectedId || savingCaseId === c.caseId}
                                 onClick={() => handleAssign(c.caseId)}
-                                className="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-900/20 transition-all"
+                                className={`w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-900/20 transition-all ${
+                                  isLight ? 'disabled:bg-slate-200 disabled:text-slate-500' : 'disabled:bg-slate-800 disabled:text-slate-500'
+                                }`}
                               >
-                                {savingCaseId === c.caseId ? 'Assigning...' : 'Assign'}
+                                {savingCaseId === c.caseId ? t(language, 'assigningLabel') : t(language, 'assignLabel')}
                               </button>
                           </div>
                        </div>
@@ -1406,7 +1556,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
           <div className="flex flex-col gap-6">
             <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 rounded-2xl">
               <h3 className="text-sm font-black uppercase tracking-[0.2em] text-emerald-400">
-                Assigned Registry
+                {t(language, 'assignedCases')}
               </h3>
               <span className="px-3 py-1 rounded-xl bg-emerald-500 text-white text-[10px] font-bold">
                 {stats.assigned}
@@ -1417,34 +1567,46 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-between animate-pulse">
                    <div className="flex items-center gap-2">
                        <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                       <span className="text-red-400 text-xs font-medium">Sync Failed</span>
+                       <span className="text-red-400 text-xs font-medium">{t(language, 'syncFailed')}</span>
                    </div>
                    <button 
                       onClick={() => loadData()}
                       className="text-[10px] font-bold uppercase tracking-wider bg-red-500/20 hover:bg-red-500/30 text-red-300 px-3 py-1.5 rounded-lg transition-all border border-red-500/20 hover:border-red-500/40"
                    >
-                      Retry
+                      {t(language, 'retryLabel')}
                    </button>
                 </div>
             )}
 
-            <div className="bg-[#0f172a] border border-slate-800 rounded-[1.5rem] overflow-hidden shadow-lg flex flex-col h-full">
+            <div
+              className={`border rounded-[1.5rem] overflow-hidden shadow-lg flex flex-col h-full ${
+                isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a] border-slate-800'
+              }`}
+            >
               {assignedCases.length === 0 ? (
-                <div className="text-center py-10 text-slate-500 text-xs uppercase tracking-widest font-bold border-2 border-dashed border-slate-800/50 m-4 rounded-xl">
-                  No assigned cases
+                <div
+                  className={`text-center py-10 text-slate-500 text-xs uppercase tracking-widest font-bold border-2 border-dashed m-4 rounded-xl ${
+                    isLight ? 'border-slate-200' : 'border-slate-800/50'
+                  }`}
+                >
+                  {t(language, 'noAssignedCasesFound')}
                 </div>
               ) : (
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
-                        <thead className="bg-slate-900/50 text-[9px] uppercase tracking-wider text-slate-400 font-bold border-b border-slate-800">
+                        <thead
+                          className={`text-[9px] uppercase tracking-wider font-bold border-b ${
+                            isLight ? 'bg-slate-50 text-slate-600 border-slate-200' : 'bg-slate-900/50 text-slate-400 border-slate-800'
+                          }`}
+                        >
                             <tr>
-                                <th className="px-4 py-3">Case ID</th>
-                                <th className="px-4 py-3">Title</th>
-                                <th className="px-4 py-3">Investigator</th>
-                                <th className="px-4 py-3 text-right">Action</th>
+                                <th className="px-4 py-3">{t(language, 'caseIdLabel')}</th>
+                                <th className="px-4 py-3">{t(language, 'titleLabel')}</th>
+                                <th className="px-4 py-3">{t(language, 'investigatorLabel')}</th>
+                                <th className="px-4 py-3 text-right">{t(language, 'actions')}</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-800">
+                        <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-slate-800'}>
                             {assignedCases.map((c, idx) => {
                               const assignedNames: string[] = Array.isArray(c.assignedNames) ? c.assignedNames : [];
                               const cid = c.caseId ? String(c.caseId) : '';
@@ -1456,24 +1618,33 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                               return (
                                 <tr 
                                     key={cid || String(idx)} 
-                                    className="group hover:bg-slate-800/50 transition-colors cursor-pointer"
+                                    className={`group transition-colors cursor-pointer ${
+                                      isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-800/50'
+                                    }`}
                                     onClick={() => cid && setOpenCaseId(cid)}
                                 >
                                     <td className="px-4 py-3 text-[10px] font-mono text-emerald-400 font-bold">
                                         {displayId}
                                     </td>
                                     <td className="px-4 py-3">
-                                        <div className="text-[11px] font-bold text-slate-200 truncate max-w-[150px]">{c.title || 'Untitled'}</div>
+                                        <div className={`text-[11px] font-bold truncate max-w-[150px] ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
+                                          {c.title || t(language, 'untitledCase')}
+                                        </div>
                                         <div className="text-[9px] text-slate-500 font-semibold">{c.currentStatus}</div>
                                     </td>
                                     <td className="px-4 py-3">
                                         <div className="flex flex-wrap gap-1">
                                             {assignedNames.length > 0 ? assignedNames.map((name, i) => (
-                                                <span key={i} className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] text-slate-300 font-medium">
+                                                <span
+                                                  key={i}
+                                                  className={`px-1.5 py-0.5 rounded border text-[9px] font-medium ${
+                                                    isLight ? 'bg-slate-100 border-slate-200 text-slate-700' : 'bg-slate-800 border-slate-700 text-slate-300'
+                                                  }`}
+                                                >
                                                     {name}
                                                 </span>
                                             )) : (
-                                                <span className="text-[9px] text-red-400 italic">Pending...</span>
+                                                <span className="text-[9px] text-red-400 italic">{t(language, 'pendingLabel')}</span>
                                             )}
                                         </div>
                                     </td>
@@ -1483,9 +1654,13 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                                                 e.stopPropagation();
                                                 setOpenCaseId(c.caseId);
                                             }}
-                                            className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-all opacity-0 group-hover:opacity-100"
+                                            className={`p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
+                                              isLight
+                                                ? 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                                                : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                                            }`}
                                         >
-                                            <span className="sr-only">View</span>
+                                            <span className="sr-only">{t(language, 'viewLabel')}</span>
                                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
                                         </button>
                                     </td>
@@ -1503,13 +1678,19 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
         )}
         
         {visibleCases.length === 0 && (
-          <div className="border border-dashed border-slate-700 rounded-[3rem] py-24 text-center text-slate-500 text-[11px] font-black uppercase tracking-[0.4em] flex flex-col gap-4 items-center justify-center">
-            <span>No cases found</span>
+          <div
+            className={`border border-dashed rounded-[3rem] py-24 text-center text-slate-500 text-[11px] font-black uppercase tracking-[0.4em] flex flex-col gap-4 items-center justify-center ${
+              isLight ? 'border-slate-200' : 'border-slate-700'
+            }`}
+          >
+            <span>{t(language, 'noCasesFound')}</span>
             <button 
                 onClick={() => loadData()}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-[10px] font-bold uppercase tracking-wider transition-all"
+                className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all ${
+                  isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-700' : 'bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white'
+                }`}
             >
-                Refresh Registry
+                {t(language, 'refreshRegistry')}
             </button>
           </div>
         )}
@@ -1529,12 +1710,18 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={e => e.stopPropagation()}
-              className="w-full max-w-6xl h-[90vh] bg-[#0f172a] border border-slate-800 rounded-[2.5rem] overflow-hidden relative shadow-2xl flex flex-col"
+              className={`w-full max-w-6xl h-[90vh] border rounded-[2.5rem] overflow-hidden relative shadow-2xl flex flex-col ${
+                isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a] border-slate-800'
+              }`}
             >
               <div className="absolute top-6 right-6 z-10">
                 <button
                   onClick={() => setOpenCaseId(null)}
-                  className="p-2 bg-slate-800/80 hover:bg-red-500/80 text-slate-400 hover:text-white rounded-full transition-all duration-300 backdrop-blur-md border border-slate-700 hover:border-red-400"
+                  className={`p-2 hover:bg-red-500/80 hover:text-white rounded-full transition-all duration-300 backdrop-blur-md border hover:border-red-400 ${
+                    isLight
+                      ? 'bg-white/80 text-slate-600 border-slate-200'
+                      : 'bg-slate-800/80 text-slate-400 border-slate-700'
+                  }`}
                 >
                   <X size={20} />
                 </button>
@@ -1544,7 +1731,7 @@ const Supervisor: React.FC<SupervisorProps> = ({ onRefresh, refreshTrigger, dele
                   caseId={openCaseId}
                   embedded
                   readOnly
-                  theme="dark"
+                  theme={isLight ? 'light' : 'dark'}
                   onClose={() => setOpenCaseId(null)}
                   onCaseUpdated={() => {
                     loadData();

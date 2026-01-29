@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronLeft, UserPlus, Trash2, ShieldCheck, Clock, MapPin, AlertCircle, Edit3, XCircle, Save, FileText, Download, Eye, Upload } from 'lucide-react';
 import api from '@/services/api';
+import { getPresignedUpload, presignEnabled, recordDocument } from '@/services/storageService';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 
 interface CaseDetailsProps {
   caseId?: string;
@@ -26,6 +28,23 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const effectiveId = caseId || routeId || '';
+  const { language } = usePreferencesStore();
+
+  const UNTITLED_CASE = 'UNTITLED CASE';
+  const NO_DESCRIPTION = 'NO DESCRIPTION';
+  const NOT_SPECIFIED = 'NOT SPECIFIED';
+  const CASE_NOT_FOUND = 'CASE NOT FOUND';
+
+  const normalizeCaseId = (raw: string) => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) return '';
+    const withoutPrefix = trimmed.replace(/^PCRS-/i, '');
+    if (/^\d+$/.test(withoutPrefix)) return `C-${withoutPrefix}`;
+    if (/^C-\d+$/i.test(withoutPrefix)) return withoutPrefix.toUpperCase();
+    return trimmed;
+  };
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   
   console.log('CaseDetails: Received caseId prop:', caseId);
   console.log('CaseDetails: Route ID from URL:', routeId);
@@ -34,6 +53,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(startInEdit && !readOnly);
   const [isSaving, setIsSaving] = useState(false);
+  const [backendCaseId, setBackendCaseId] = useState('');
   
   const [formData, setFormData] = useState<any>({
     caseId: '',
@@ -58,24 +78,23 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
     setLoading(true);
     try {
       let caseData = null;
+      const normalizedEffectiveId = normalizeCaseId(effectiveId);
+      const effectiveNumber = String(normalizedEffectiveId || '')
+        .replace(/^C-/i, '')
+        .replace(/^PCRS-/i, '')
+        .trim();
       
-      // 1. Try to fetch specific case directly (Best for performance and getting UUID)
-      // Only try direct fetch if ID looks like a UUID (long) or doesn't start with 'C-' to avoid 404s on Case Numbers
-      const looksLikeUUID = effectiveId && effectiveId.length > 20 && !effectiveId.startsWith('C-') && !effectiveId.startsWith('PCRS-');
-      
-      if (looksLikeUUID) {
+      if (normalizedEffectiveId) {
         try {
-            console.log(`Fetching specific case: /cases/${effectiveId}`);
-            const specificRes = await api.get(`/cases/${effectiveId}`);
-            if (specificRes.data) {
-                caseData = specificRes.data;
-                console.log("Found case via direct fetch:", caseData);
-            }
+          console.log(`Fetching specific case: /cases/${normalizedEffectiveId}`);
+          const specificRes = await api.get(`/cases/${normalizedEffectiveId}`);
+          if (specificRes.data) {
+            caseData = specificRes.data;
+            console.log('Found case via direct fetch:', caseData);
+          }
         } catch (directErr) {
-            console.warn("Direct fetch failed, falling back to list scan:", directErr);
+          console.warn('Direct fetch failed, falling back to list scan:', directErr);
         }
-      } else {
-        console.log(`Skipping direct fetch for ID '${effectiveId}' (likely a Case Number) to avoid 404 console error.`);
       }
 
       // 2. Fallback: Scan all cases if direct fetch failed or was skipped
@@ -84,54 +103,37 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
           const allCasesRes = await api.get('/cases');
           console.log("All Cases Response:", allCasesRes.data);
           if (Array.isArray(allCasesRes.data)) {
-            // Find ALL matches to handle potential duplicates (ghost records)
             const matches = allCasesRes.data.filter((c: any) => {
-                const idStr = String(c.caseId || c.case_id);
-                const numStr = String(c.caseNumber || c.case_number);
-                const searchStr = String(effectiveId);
-                const searchNum = searchStr.replace(/^C-/i, '').replace(/^PCRS-/i, '');
-                return idStr === searchStr || numStr === searchNum || numStr === searchStr;
+              const idStr = String(c.caseId || c.case_id || '').trim();
+              const numStr = String(c.caseNumber || c.case_number || '').trim();
+              if (idStr && idStr === normalizedEffectiveId) return true;
+              if (effectiveNumber && numStr && numStr === effectiveNumber) return true;
+              if (effectiveNumber && idStr && idStr === `C-${effectiveNumber}`) return true;
+              return false;
             });
 
             if (matches.length > 0) {
                 console.log("Ghost Record Hunt: Found matches:", matches.map((m: any) => ({id: m.caseId, num: m.caseNumber})));
-                // Prioritize UUID over "C-" ID
-                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                const uuidMatch = matches.find((c: any) => uuidRegex.test(c.caseId || c.case_id));
-                
-                if (uuidMatch) {
-                     console.log("Ghost Record Hunt: Selected UUID match:", uuidMatch.caseId);
-                     caseData = uuidMatch;
+                const exactIdMatch = matches.find((c: any) => {
+                  const idStr = String(c.caseId || c.case_id || '').trim();
+                  return idStr && idStr === normalizedEffectiveId;
+                });
+
+                if (exactIdMatch) {
+                  caseData = exactIdMatch;
+                } else if (effectiveNumber) {
+                  const uuidMatch = matches.find((c: any) =>
+                    uuidRegex.test(String(c.caseId || c.case_id || '').trim())
+                  );
+                  caseData = uuidMatch || matches[0];
                 } else {
-                     console.log("Ghost Record Hunt: No UUID match found, using first match:", matches[0].caseId);
-                     caseData = matches[0];
+                  caseData = matches[0];
                 }
 
                 if (matches.length > 1) {
                     console.warn("Found multiple cases matching ID:", effectiveId, matches);
                 }
             }
-          
-          // UUID Discovery: If the found case has a "C-" ID, look for a real UUID in other fields
-          if (caseData) {
-             const currentId = String(caseData.caseId || caseData.case_id || '');
-             if (currentId.startsWith('C-') || /^\d+$/.test(currentId)) {
-                 console.log("Current ID looks like a Case Number. Hunting for hidden UUID...");
-                 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                 for (const key in caseData) {
-                     const val = String(caseData[key]);
-                     if (key !== 'caseId' && uuidRegex.test(val)) {
-                         console.log(`Found potential UUID in field '${key}': ${val}`);
-                         caseData.realUUID = val; // Store it
-                         // Swap it in if it seems safer
-                         if (!caseData.caseId || caseData.caseId.startsWith('C-')) {
-                             caseData.caseId = val;
-                         }
-                         break;
-                     }
-                 }
-             }
-          }
           console.log("Found case from list:", caseData);
           }
         } catch (listErr) {
@@ -141,8 +143,22 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
       
       if (caseData) {
         // Handle both camelCase and snake_case field names
+        const rawBackendId = String(caseData.caseId || caseData.case_id || '').trim();
+        setBackendCaseId(rawBackendId || '');
+        const caseNumberStr = String(caseData.caseNumber || caseData.case_number || '').trim();
+        const derivedDisplayId =
+          caseNumberStr && /^\d+$/.test(caseNumberStr)
+            ? `C-${caseNumberStr}`
+            : effectiveNumber && /^\d+$/.test(effectiveNumber)
+              ? `C-${effectiveNumber}`
+              : normalizeCaseId(caseData.caseId || caseData.case_id || effectiveId || '');
+        const resolvedCaseId =
+          derivedDisplayId && derivedDisplayId.toUpperCase().startsWith('C-')
+            ? derivedDisplayId.toUpperCase()
+            : derivedDisplayId;
         const data = {
-          caseId: caseData.caseId || caseData.case_id || effectiveId || '',
+          ...caseData,
+          caseId: resolvedCaseId,
           caseNumber: caseData.caseNumber || caseData.case_number || '',
           title: caseData.title || caseData.caseTitle || caseData.case_title || 'UNTITLED CASE',
           caseType: caseData.caseType || caseData.case_type || '',
@@ -150,7 +166,6 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
           location: caseData.location || 'NOT SPECIFIED',
           currentStatus: caseData.currentStatus || caseData.current_status || caseData.status || 'Registered',
           registrationDate: caseData.registrationDate || caseData.registration_date || caseData.date || '',
-          ...caseData
         };
         console.log("Processed Case Data:", data);
         // Show friendly error for missing documents if they are expected
@@ -168,7 +183,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
         console.error("No case data found for ID:", effectiveId);
         // Set default values so the form doesn't break
         const defaultData = {
-          caseId: effectiveId || '',
+          caseId: normalizeCaseId(effectiveId) || '',
           caseNumber: '',
           title: 'CASE NOT FOUND',
           caseType: '',
@@ -193,8 +208,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
         
         // STRATEGY 2: Fetch from API if not embedded
         if (partiesData.length === 0) {
-            // Resolve the best available ID (UUID preferred)
-            const resolvedId = (caseData && (caseData.caseId || caseData.case_id)) || effectiveId;
+            const resolvedId = String(caseData.caseId || caseData.case_id || '').trim() || normalizeCaseId(effectiveId);
             console.log(`Fetching parties using Resolved ID: ${resolvedId} (Original: ${effectiveId})`);
 
             try {
@@ -225,7 +239,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                      const partyCaseId = String(p.caseId || p.case_id || '');
                      const currentCaseId = String(resolvedId || '');
                      // Loose comparison to handle string vs number or UUID vs CaseNo mismatch
-                     return partyCaseId == currentCaseId || partyCaseId == effectiveId;
+                     return partyCaseId == currentCaseId || partyCaseId == normalizeCaseId(effectiveId);
                    });
                  }
               } catch (fallbackErr) {
@@ -245,11 +259,10 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
 
       // Fetch Documents
       try {
-        const baseCaseId = String(
-          (caseData && (caseData.caseId || caseData.case_id || caseData.caseID)) ||
-          effectiveId ||
-          ''
-        );
+        const baseCaseId =
+          String(caseData?.caseId || caseData?.case_id || caseData?.caseID || '').trim() ||
+          normalizeCaseId(effectiveId) ||
+          '';
 
         let documentsData: any[] = [];
         
@@ -415,16 +428,18 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
   const handleUpdateSubmit = async () => {
     setIsSaving(true);
     
-    // Resolve the correct Target ID (UUID)
-    // Priority:
-    // 1. originalData.caseId (Most reliable, from initial fetch)
-    // 2. formData.caseId (If edited, though ID usually isn't)
-    // 3. effectiveId (Fallback, but might be a Case Number like C-123)
-    let targetId = originalData?.caseId || formData.caseId || effectiveId;
-
-    // If targetId is a Case Number (starts with 'C-' or is purely numeric) and we have a UUID available in originalData, force use of UUID
-    if ((String(targetId).startsWith('C-') || /^\d+$/.test(String(targetId))) && originalData?.caseId && !String(originalData.caseId).startsWith('C-')) {
-        targetId = originalData.caseId;
+    let targetId = String(backendCaseId || '').trim();
+    if (!targetId) {
+      const fromOriginal = String(originalData?.caseId || '').trim();
+      targetId = fromOriginal && uuidRegex.test(fromOriginal) ? fromOriginal : '';
+    }
+    if (!targetId) {
+      const normalized = normalizeCaseId(effectiveId);
+      targetId = uuidRegex.test(normalized) ? normalized : '';
+    }
+    if (!targetId) {
+      const normalized = normalizeCaseId(effectiveId);
+      targetId = normalized || String(effectiveId || '').trim();
     }
 
     // Ensure we have a valid caseNumber in the payload if the ID is a Case Number (helps backend fallback lookup)
@@ -437,37 +452,12 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
         }
     }
 
-    // FINAL ATTEMPT TO RESOLVE UUID BEFORE SAVE
-    // If targetId is still a "C-" number, try to find the real UUID from the backend list
-    // This avoids 401/404 errors when using the "C-" number in the PUT URL
-    if (String(targetId).startsWith('C-') || String(targetId).startsWith('PCRS-')) {
-        console.log("Target ID is a Case Number. Attempting to resolve UUID before PUT...");
-        try {
-             const lookupRes = await api.get('/cases');
-             if (Array.isArray(lookupRes.data)) {
-                 const found = lookupRes.data.find((c: any) => 
-                     String(c.caseNumber) === String(payloadCaseNumber) || 
-                     String(c.caseId) === String(targetId) ||
-                     String(c.case_id) === String(targetId)
-                 );
-                 if (found) {
-                     const realUUID = found.caseId || found.case_id;
-                     if (realUUID && !String(realUUID).startsWith('C-')) {
-                         console.log(`Resolved UUID for save: ${realUUID} (replacing ${targetId})`);
-                         targetId = realUUID;
-                     }
-                 }
-             }
-        } catch (e) { 
-            console.error("Failed to resolve UUID before save:", e); 
-        }
-    }
-
     console.log("Updating Case using Target ID:", targetId, "(Original effectiveId:", effectiveId, ")");
 
     try {
+      const { caseId: _omitCaseId, ...casePayload } = formData || {};
       await api.put(`/cases/${targetId}`, {
-        ...formData,
+        ...casePayload,
         caseNumber: payloadCaseNumber, // Explicitly send the number
         title: formData.title.toUpperCase(),
         location: formData.location.toUpperCase()
@@ -513,7 +503,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
         console.log('DEBUG: CaseDetails: onCaseUpdated is undefined');
       }
       fetchData(); 
-      alert("CASE UPDATED SUCCESSFULLY");
+      alert(t(language, 'caseUpdatedSuccessfully'));
     } catch (err: any) {
       console.error("Sync Error:", err);
 
@@ -529,63 +519,23 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
              console.log('DEBUG: CaseDetails: onCaseUpdated is undefined in 500 case');
            }
            fetchData();
-           alert("CASE UPDATED SUCCESSFULLY."); 
+           alert(t(language, 'caseUpdatedSuccessfully')); 
            return;
       }
 
       // Handle 401 Unauthorized (Session Expired or Bad ID)
       if (err.response && err.response.status === 401) {
            console.error("401 Unauthorized during save. ID used:", targetId);
-           alert("ERROR: Session expired or Unauthorized. Please refresh the page and try again.");
+           alert(t(language, 'sessionExpiredOrUnauthorized'));
            return;
       }
             
-      // Auto-Recovery: If PUT fails with 404, try POST to re-create/merge the case
       if (err.response && err.response.status === 404) {
-         console.warn("Case not found on update (404). Attempting to re-sync via Create (POST)...");
-         try {
-             // Ensure we send the exact same ID to perform a merge/upsert
-             // Sanitize payload to match CaseDTO strictly
-             const recoveryPayload = {
-                 caseId: targetId,
-                 caseNumber: formData.caseNumber ? Number(formData.caseNumber) : null,
-                 title: (formData.title || 'UNTITLED').toUpperCase(),
-                 caseType: formData.caseType || 'General',
-                 caseDescription: formData.caseDescription || '',
-                 currentStatus: formData.currentStatus || 'Registered',
-                 location: (formData.location || 'Unknown').toUpperCase(),
-                 registrationDate: formData.registrationDate || new Date().toISOString().split('T')[0]
-             };
-             
-             console.log("Sending Recovery Payload:", recoveryPayload);
-             await api.post('/cases', recoveryPayload);
-             
-             // If successful, we can't easily retry parties because of the 500 error on GET parties
-             // But the case itself is saved.
-             setIsEditing(false);
-             fetchData();
-             alert("CASE RE-SYNCED AND UPDATED SUCCESSFULLY (Recovery Mode)");
-             return;
-         } catch (recoveryErr: any) {
-             console.error("Recovery failed:", recoveryErr);
-             
-             // Handle 500 Error (Likely LazyInitializationException on serialization)
-             // The save usually succeeds in DB, but response serialization fails.
-             if (recoveryErr.response && recoveryErr.response.status === 500) {
-                 console.warn("Recovery POST returned 500, assuming success due to backend serialization issue.");
-                 setIsEditing(false);
-                 fetchData();
-                 // Suppress warning and just say success
-                 alert("CASE UPDATED SUCCESSFULLY."); 
-                 return;
-             }
-
-             const msg = recoveryErr.response?.data || recoveryErr.message;
-             alert(`ERROR SAVING DATA: Case could not be recovered. (${msg})`);
-         }
+        alert(t(language, 'caseNotFound404'));
+        return;
       } else {
         const detailedMsg = err.response?.data?.message || err.response?.data?.error || err.message || 'Unknown Error';
-        alert(`ERROR SAVING DATA: ${detailedMsg}`);
+        alert(`${t(language, 'errorSavingData')}: ${detailedMsg}`);
       }
     } finally {
       setIsSaving(false);
@@ -622,12 +572,16 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
   const getDocumentPath = (doc: any) => {
     const raw =
       (doc as any).documentUrl ||
+      (doc as any).objectKey ||
       doc.viewTheUploadedDocument ||
       doc.digitalFilePath ||
       doc.documentUpload ||
       '';
     const trimmed = String(raw || '').trim();
     if (!trimmed || trimmed === '#' || trimmed.toLowerCase() === 'n/a') return null;
+    if (trimmed.startsWith('cases/')) {
+      return `http://localhost:9000/pcrs-file/${trimmed}`;
+    }
     return trimmed;
   };
 
@@ -667,7 +621,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
           window.open(directUrl, '_blank');
           return;
         }
-        alert("Unable to view document. File may not be available.");
+        alert(t(language, 'unableToViewDocument'));
         return;
       }
 
@@ -700,7 +654,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
         } catch (_) {
         }
       }
-      alert("Unable to view document. File may not be available.");
+      alert(t(language, 'unableToViewDocument'));
     }
   };
 
@@ -726,7 +680,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
           link.remove();
           return;
         }
-        alert("Unable to download document. File may not be available.");
+        alert(t(language, 'unableToDownloadDocument'));
         return;
       }
 
@@ -766,7 +720,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
           return;
         } catch (_) {}
       }
-      alert("Unable to download document. File may not be available.");
+      alert(t(language, 'unableToDownloadDocument'));
     }
   };
 
@@ -778,24 +732,68 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
 
   const handleUploadDocument = async () => {
     if (!selectedFile) {
-      alert("Please select a file to upload.");
+      alert(t(language, 'pleaseSelectFileToUpload'));
       return;
     }
 
     setIsUploading(true);
     try {
+      const file = selectedFile;
+      const contentType = file.type || 'application/octet-stream';
+      const resolvedCaseId =
+        String(backendCaseId || '').trim() ||
+        normalizeCaseId(formData.caseId || effectiveId || '');
+
+      if (file && resolvedCaseId && presignEnabled()) {
+        try {
+          const presign = await getPresignedUpload({
+            caseId: String(resolvedCaseId),
+            fileName: file.name,
+            contentType,
+          });
+
+          const putRes = await fetch(presign.url, {
+            method: 'PUT',
+            headers: { 'Content-Type': contentType },
+            body: file,
+          });
+
+          if (!putRes.ok) {
+            throw new Error(`MinIO upload failed: ${putRes.status}`);
+          }
+
+          await recordDocument({
+            caseId: String(resolvedCaseId),
+            objectKey: presign.key,
+            typeOfDocument: 'Case Document',
+            locationOfTheStorage: 'MinIO - pcrs-file',
+            originalName: file.name,
+            size: file.size,
+            contentType,
+          });
+
+          alert(t(language, 'documentUploadedSuccessfully'));
+          setSelectedFile(null);
+          const fileInput = document.getElementById('file-upload') as HTMLInputElement;
+          if (fileInput) fileInput.value = '';
+          if (onCaseUpdated) onCaseUpdated();
+          fetchData();
+          return;
+        } catch (_) {
+        }
+      }
+
       const formDataUpload = new FormData();
-      formDataUpload.append('file', selectedFile);
-      // Use resolved UUID from state if available, otherwise fallback to effectiveId
-      formDataUpload.append('caseId', formData.caseId || effectiveId || '');
+      formDataUpload.append('file', file);
+      formDataUpload.append('caseId', String(resolvedCaseId));
       formDataUpload.append('typeOfDocument', 'Case Document');
-      formDataUpload.append('locationOfTheStorage', 'Case Files');
+      formDataUpload.append('locationOfTheStorage', 'MinIO - pcrs-file');
 
       await api.post('/documents/upload', formDataUpload, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
-      alert("Document uploaded successfully!");
+      alert(t(language, 'documentUploadedSuccessfully'));
       setSelectedFile(null);
       // Reset file input
       const fileInput = document.getElementById('file-upload') as HTMLInputElement;
@@ -806,7 +804,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
       
     } catch (err: any) {
       console.error("Upload failed:", err);
-      alert(err.response?.data?.message || "Failed to upload document. Please try again.");
+      alert(err.response?.data?.message || t(language, 'failedToUploadDocument'));
     } finally {
       setIsUploading(false);
     }
@@ -820,88 +818,88 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
     >
       <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
       <div className="text-blue-500 font-black tracking-[0.5em] uppercase text-[10px]">
-        Loading Case Data...
+        {t(language, 'loadingCaseData')}
       </div>
-      <div className="text-slate-600 text-[8px] font-mono mt-2">Case ID: {effectiveId}</div>
+      <div className="text-slate-600 text-[8px] font-mono mt-2">{t(language, 'caseIdPrefix')}: {effectiveId}</div>
     </div>
   );
 
   const progress = getProgressPercent(formData.currentStatus);
 
   const containerClass = isLight
-    ? 'h-screen bg-[#03091B] text-white font-sans overflow-y-auto'
+    ? 'h-screen bg-[color:var(--pcrs-bg)] text-[color:var(--pcrs-text)] font-sans overflow-y-auto'
     : 'h-screen bg-[#03091B] text-white font-sans overflow-y-auto';
 
   const headerBorderClass = isLight ? 'border-slate-200' : 'border-white/10';
 
   const backLinkClass = isLight
-    ? 'text-slate-400 hover:text-slate-900'
+    ? 'text-slate-600 hover:text-slate-900'
     : 'text-slate-500 hover:text-white';
 
   const progressCardClass = isLight
-    ? 'bg-[#0a1929] p-8 rounded-[2.5rem] border border-blue-500/20 shadow-2xl relative overflow-hidden'
+    ? 'bg-[color:var(--pcrs-surface)] p-8 rounded-[2.5rem] border border-[color:var(--pcrs-border)] shadow-2xl relative overflow-hidden'
     : 'bg-[#0a1929] p-8 rounded-[2.5rem] border border-blue-500/20 shadow-2xl relative overflow-hidden';
 
   const infoBlockClass = isLight
-    ? 'bg-[#0a1929] p-12 rounded-[3rem] border border-blue-500/20 relative shadow-2xl'
+    ? 'bg-[color:var(--pcrs-surface)] p-12 rounded-[3rem] border border-[color:var(--pcrs-border)] relative shadow-2xl'
     : 'bg-[#0a1929] p-12 rounded-[3rem] border border-blue-500/20 relative shadow-2xl';
 
   const mainCardStripClass = isLight ? 'bg-blue-600/20' : 'bg-blue-600/50';
 
   const titleInputClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white font-black uppercase outline-none transition-all text-xl break-words'
-    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white font-black uppercase outline-none transition-all text-xl break-words';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-[color:var(--pcrs-text)] font-black uppercase outline-none transition-all text-lg break-words'
+    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white font-black uppercase outline-none transition-all text-lg break-words';
 
   const titleDisplayClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white font-black uppercase text-xl break-words overflow-wrap-anywhere'
-    : 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white font-black uppercase text-xl break-words overflow-wrap-anywhere';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-5 rounded-2xl text-[color:var(--pcrs-text)] font-black uppercase text-lg break-words overflow-wrap-anywhere'
+    : 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white font-black uppercase text-lg break-words overflow-wrap-anywhere';
 
   const locationInputClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white uppercase outline-none transition-all text-xl break-words'
-    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white uppercase outline-none transition-all text-xl break-words';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-[color:var(--pcrs-text)] uppercase outline-none transition-all text-lg break-words'
+    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white uppercase outline-none transition-all text-lg break-words';
 
   const locationDisplayClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white uppercase text-xl break-words overflow-wrap-anywhere'
-    : 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white uppercase text-xl break-words overflow-wrap-anywhere';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-5 rounded-2xl text-[color:var(--pcrs-text)] uppercase text-lg break-words overflow-wrap-anywhere'
+    : 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white uppercase text-lg break-words overflow-wrap-anywhere';
 
   const caseTypeSelectClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/30 p-5 rounded-2xl text-white font-black uppercase outline-none text-lg'
-    : 'w-full bg-[#0a1929] border border-blue-500/30 p-5 rounded-2xl text-white font-black uppercase outline-none text-lg';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-blue-500/30 p-5 rounded-2xl text-[color:var(--pcrs-text)] font-black uppercase outline-none text-base'
+    : 'w-full bg-[#0a1929] border border-blue-500/30 p-5 rounded-2xl text-white font-black uppercase outline-none text-base';
 
   const caseTypeDisplayClass = isLight
-    ? 'p-5 text-xl font-black text-blue-400 uppercase bg-[#0a1929] border border-blue-500/20 rounded-2xl'
-    : 'p-5 text-xl font-black text-blue-400 uppercase bg-[#0a1929] border border-blue-500/20 rounded-2xl';
+    ? 'p-5 text-lg font-black text-blue-600 uppercase bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] rounded-2xl'
+    : 'p-5 text-lg font-black text-blue-400 uppercase bg-[#0a1929] border border-blue-500/20 rounded-2xl';
 
   const dateInputClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white outline-none font-mono text-lg'
-    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white outline-none font-mono text-lg';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-[color:var(--pcrs-text)] outline-none font-mono text-base'
+    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-5 rounded-2xl text-white outline-none font-mono text-base';
 
   const dateDisplayClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white font-mono text-lg'
-    : 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white font-mono text-lg';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-5 rounded-2xl text-[color:var(--pcrs-text)] font-mono text-base'
+    : 'w-full bg-[#0a1929] border border-blue-500/20 p-5 rounded-2xl text-white font-mono text-base';
 
   const narrativeInputClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-8 rounded-[2rem] text-white h-64 outline-none leading-relaxed transition-all text-lg'
-    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-8 rounded-[2rem] text-white h-64 outline-none leading-relaxed transition-all text-lg';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-blue-500/30 ring-2 ring-blue-500/10 p-8 rounded-[2rem] text-[color:var(--pcrs-text)] h-64 outline-none leading-relaxed transition-all text-base'
+    : 'w-full bg-[#0a1929] border border-blue-500/30 ring-2 ring-blue-500/10 p-8 rounded-[2rem] text-white h-64 outline-none leading-relaxed transition-all text-base';
 
   const narrativeDisplayClass = isLight
-    ? 'w-full bg-[#0a1929] border border-blue-500/20 p-8 rounded-[2rem] text-white h-64 leading-relaxed text-lg overflow-y-auto whitespace-pre-wrap'
-    : 'w-full bg-[#0a1929] border border-blue-500/20 p-8 rounded-[2rem] text-white h-64 leading-relaxed text-lg overflow-y-auto whitespace-pre-wrap';
+    ? 'w-full bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] p-8 rounded-[2rem] text-[color:var(--pcrs-text)] h-64 leading-relaxed text-base overflow-y-auto whitespace-pre-wrap'
+    : 'w-full bg-[#0a1929] border border-blue-500/20 p-8 rounded-[2rem] text-white h-64 leading-relaxed text-base overflow-y-auto whitespace-pre-wrap';
 
   const docsContainerClass = isLight
-    ? 'bg-[#0a1929] border border-blue-500/20 rounded-[2rem] p-6 space-y-4'
+    ? 'bg-[color:var(--pcrs-surface)] border border-[color:var(--pcrs-border)] rounded-[2rem] p-6 space-y-4'
     : 'bg-[#0a1929] border border-blue-500/20 rounded-[2rem] p-6 space-y-4';
 
   const docsUploadAreaClass = isLight
-    ? 'mb-4 p-4 bg-[#0a1929] border border-dashed border-blue-500/30 rounded-2xl'
+    ? 'mb-4 p-4 bg-[color:var(--pcrs-surface-2)] border border-dashed border-blue-500/30 rounded-2xl'
     : 'mb-4 p-4 bg-[#0a1929] border border-dashed border-blue-500/30 rounded-2xl';
 
   const docsItemClass = isLight
-    ? 'p-4 rounded-2xl bg-[#0a1929] border border-blue-500/20 flex items-center justify-between group hover:border-blue-500/50 transition-all'
+    ? 'p-4 rounded-2xl bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] flex items-center justify-between group hover:border-blue-500/50 transition-all'
     : 'p-4 rounded-2xl bg-[#0a1929] border border-blue-500/20 flex items-center justify-between group hover:border-blue-500/50 transition-all';
 
   const docsTitleClass = isLight
-    ? 'text-sm font-black uppercase text-white truncate'
+    ? 'text-sm font-black uppercase text-[color:var(--pcrs-text)] truncate'
     : 'text-sm font-black uppercase text-white truncate';
 
   const docsEmptyClass = isLight
@@ -909,11 +907,11 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
     : 'text-center py-8 border border-dashed border-blue-500/20 rounded-2xl';
 
   const partyCardClass = isLight
-    ? 'bg-[#0a1929] p-6 rounded-[2.5rem] border border-blue-500/20'
+    ? 'bg-[color:var(--pcrs-surface)] p-6 rounded-[2.5rem] border border-[color:var(--pcrs-border)]'
     : 'bg-[#0a1929] p-6 rounded-[2.5rem] border border-blue-500/20';
 
   const partyInnerCardClass = isLight
-    ? 'p-4 rounded-2xl bg-[#0a1929] border border-blue-500/20 relative'
+    ? 'p-4 rounded-2xl bg-[color:var(--pcrs-surface-2)] border border-[color:var(--pcrs-border)] relative'
     : 'p-4 rounded-2xl bg-[#0a1929] border border-blue-500/20 relative';
 
   const partyAddButtonClass = isLight
@@ -956,18 +954,32 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
             }}
             className={`flex items-center gap-2 transition-all text-[10px] font-black uppercase tracking-[0.3em] mb-4 ${backLinkClass}`}
           >
-             <ChevronLeft size={14}/> {embedded ? 'Back to Admin Console' : 'Return to Hub'}
+             <ChevronLeft size={14}/> {embedded ? t(language, 'backToAdminConsole') : t(language, 'returnToHub')}
           </button>
           <div className="flex items-center gap-4">
             <div>
-              <h1 className="text-6xl font-black uppercase italic tracking-tighter leading-none">
-                FILE: <span className="text-blue-600">{formData.title || 'UNTITLED CASE'}</span>
+              <h1 className="text-5xl font-black uppercase italic tracking-tighter leading-none">
+                {t(language, 'file')}: <span className="text-blue-600">
+                  {(() => {
+                    const title = String(formData.title || '').trim();
+                    if (!title) return t(language, 'untitledCase');
+                    if (title === CASE_NOT_FOUND) return t(language, 'caseNotFound');
+                    if (title === UNTITLED_CASE) return t(language, 'untitledCase');
+                    return title;
+                  })()}
+                </span>
               </h1>
               {formData.caseNumber && (
-                <p className="text-[10px] font-mono text-slate-500 mt-2 uppercase tracking-widest">Case #: {formData.caseNumber}</p>
+                <p className="text-[10px] font-mono text-slate-500 mt-2 uppercase tracking-widest">
+                  {t(language, 'caseNumber')}: {formData.caseNumber}
+                </p>
               )}
             </div>
-            {!isEditing && <span className="bg-blue-500/10 text-blue-500 border border-blue-500/20 px-4 py-1 rounded-md text-[10px] font-bold tracking-widest uppercase">Analysis Mode</span>}
+            {!isEditing && (
+              <span className="bg-blue-500/10 text-blue-500 border border-blue-500/20 px-4 py-1 rounded-md text-[10px] font-bold tracking-widest uppercase">
+                {t(language, 'analysisMode')}
+              </span>
+            )}
           </div>
         </div>
         
@@ -979,7 +991,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                   onClick={() => setIsEditing(true)} 
                   className="px-10 py-4 rounded-2xl font-black text-[10px] uppercase border border-blue-500 text-blue-500 hover:bg-blue-500/10 transition-all flex items-center gap-2"
                 >
-                  <Edit3 size={14}/> Edit Specifics
+                  <Edit3 size={14}/> {t(language, 'editSpecifics')}
                 </button>
               )
             ) : (
@@ -988,14 +1000,14 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                   onClick={handleDiscard} 
                   className="px-8 py-4 rounded-2xl font-black text-[10px] uppercase border border-red-500 text-red-500 bg-red-500/5 hover:bg-red-500/10 transition-all flex items-center gap-2"
                 >
-                  <XCircle size={14}/> Discard Changes
+                  <XCircle size={14}/> {t(language, 'discardChanges')}
                 </button>
                 <button 
                   onClick={handleUpdateSubmit} 
                   disabled={isSaving}
                   className="bg-blue-600 hover:bg-blue-500 px-10 py-4 rounded-2xl font-black text-[10px] uppercase shadow-lg shadow-blue-600/30 flex items-center gap-2"
                 >
-                  <Save size={14}/> {isSaving ? "Syncing..." : "Confirm Global Sync"}
+                  <Save size={14}/> {isSaving ? t(language, 'syncing') : t(language, 'confirmGlobalSync')}
                 </button>
               </>
             )}
@@ -1007,7 +1019,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
               title="Close View"
             >
               <XCircle size={14} />
-              Close
+              {t(language, 'close')}
             </button>
           )}
         </div>
@@ -1020,20 +1032,20 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
           <div className={progressCardClass}>
               <div className="flex justify-between items-end mb-6">
                 <div>
-                  <label className="text-[10px] font-black text-slate-500 tracking-[0.3em] uppercase block mb-2">Operational Status</label>
+                  <label className="text-[10px] font-black text-slate-500 tracking-[0.3em] uppercase block mb-2">{t(language, 'operationalStatus')}</label>
                   {isEditing ? (
-                    <select name="currentStatus" className="bg-blue-600 text-white font-black italic uppercase text-2xl px-4 py-2 rounded-xl outline-none" value={formData.currentStatus} onChange={handleInputChange}>
-                      <option value="New">New</option>
-                      <option value="In Progress">In Progress</option>
-                      <option value="Closed">Closed</option>
-                      <option value="Total">Total</option>
+                    <select name="currentStatus" className="bg-blue-600 text-white font-black italic uppercase text-xl px-4 py-2 rounded-xl outline-none" value={formData.currentStatus} onChange={handleInputChange}>
+                      <option value="New">{t(language, 'new')}</option>
+                      <option value="In Progress">{t(language, 'inProgress')}</option>
+                      <option value="Closed">{t(language, 'closed')}</option>
+                      <option value="Total">{t(language, 'total')}</option>
                     </select>
                   ) : (
-                    <h3 className="text-5xl font-black italic uppercase text-blue-500 tracking-tighter">{formData.currentStatus || 'New'}</h3>
+                    <h3 className="text-4xl font-black italic uppercase text-blue-500 tracking-tighter">{formData.currentStatus || t(language, 'new')}</h3>
                   )}
                 </div>
                 <div className="text-right">
-                    <span className="text-5xl font-black italic text-slate-800 tracking-tighter">{progress}%</span>
+                    <span className="text-4xl font-black italic text-slate-800 tracking-tighter">{progress}%</span>
                 </div>
               </div>
               <div
@@ -1052,7 +1064,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
               <div className="grid grid-cols-2 gap-10">
                   <div className="space-y-4">
                     <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest flex items-center gap-2">
-                      <ShieldCheck size={14} className="text-blue-500" /> Subject Identification
+                      <ShieldCheck size={14} className="text-blue-500" /> {t(language, 'subjectIdentification')}
                     </label>
                     {isEditing ? (
                       <input
@@ -1063,15 +1075,19 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                       />
                     ) : (
                       <div className={titleDisplayClass}>
-                        {formData.title && formData.title !== 'UNTITLED CASE'
-                          ? formData.title
-                          : formData.title || 'UNTITLED CASE'}
+                        {(() => {
+                          const title = String(formData.title || '').trim();
+                          if (!title) return t(language, 'untitledCase');
+                          if (title === CASE_NOT_FOUND) return t(language, 'caseNotFound');
+                          if (title === UNTITLED_CASE) return t(language, 'untitledCase');
+                          return title;
+                        })()}
                       </div>
                     )}
                   </div>
                   <div className="space-y-4">
                     <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest flex items-center gap-2">
-                      <MapPin size={14} className="text-blue-500" /> Incident Location
+                      <MapPin size={14} className="text-blue-500" /> {t(language, 'incidentLocation')}
                     </label>
                     {isEditing ? (
                       <input
@@ -1082,9 +1098,12 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                       />
                     ) : (
                       <div className={locationDisplayClass}>
-                        {formData.location && formData.location !== 'NOT SPECIFIED'
-                          ? formData.location
-                          : formData.location || 'NOT SPECIFIED'}
+                        {(() => {
+                          const loc = String(formData.location || '').trim();
+                          if (!loc) return t(language, 'notSpecified');
+                          if (loc === NOT_SPECIFIED) return t(language, 'notSpecified');
+                          return loc;
+                        })()}
                       </div>
                     )}
                   </div>
@@ -1093,7 +1112,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
               <div className="grid grid-cols-2 gap-10">
                   <div className="space-y-4">
                     <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest block">
-                      Offense Classification
+                      {t(language, 'offenseClassification')}
                     </label>
                     {isEditing ? (
                       <select
@@ -1102,19 +1121,19 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                         value={formData.caseType || ''}
                         onChange={handleInputChange}
                       >
-                          <option value="">Select Case Type</option>
-                          <option value="Theft">Theft</option>
-                          <option value="Fraud">Fraud</option>
-                          <option value="Assault">Assault</option>
-                          <option value="Cybercrime">Cybercrime</option>
+                          <option value="">{t(language, 'selectCaseType')}</option>
+                          <option value="Theft">{t(language, 'theft')}</option>
+                          <option value="Fraud">{t(language, 'fraud')}</option>
+                          <option value="Assault">{t(language, 'assault')}</option>
+                          <option value="Cybercrime">{t(language, 'cybercrime')}</option>
                       </select>
                     ) : (
-                      <div className={caseTypeDisplayClass}>{formData.caseType || 'NOT SPECIFIED'}</div>
+                      <div className={caseTypeDisplayClass}>{formData.caseType || t(language, 'notSpecified')}</div>
                     )}
                   </div>
                   <div className="space-y-4">
                     <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest flex items-center gap-2">
-                      <Clock size={14} className="text-blue-500" /> Date of Incident
+                      <Clock size={14} className="text-blue-500" /> {t(language, 'dateOfIncident')}
                     </label>
                     {isEditing ? (
                       <input
@@ -1128,7 +1147,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                       <div className={dateDisplayClass}>
                         {formData.registrationDate
                           ? new Date(formData.registrationDate).toLocaleDateString()
-                          : 'NOT SPECIFIED'}
+                          : t(language, 'notSpecified')}
                       </div>
                     )}
                   </div>
@@ -1136,7 +1155,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
 
               <div className="space-y-4">
                 <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">
-                  Case Intelligence & Narrative
+                  {t(language, 'caseIntelligenceNarrative')}
                 </label>
                 {isEditing ? (
                   <textarea
@@ -1147,9 +1166,13 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                   />
                 ) : (
                   <div className={narrativeDisplayClass}>
-                    {formData.caseDescription && formData.caseDescription !== 'NO DESCRIPTION'
-                      ? formData.caseDescription
-                      : formData.caseDescription || 'NO DESCRIPTION'}
+                    {(() => {
+                      const desc = String(formData.caseDescription || '').trim();
+                      if (!desc) return t(language, 'noDescription');
+                      if (desc === NO_DESCRIPTION) return t(language, 'noDescription');
+                      if (desc === t('en', 'unableToLoadCaseData')) return t(language, 'unableToLoadCaseData');
+                      return desc;
+                    })()}
                   </div>
                 )}
               </div>
@@ -1158,7 +1181,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <FileText size={16} className="text-blue-500" />
-                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic">ATTACHED DOCUMENTS</h3>
+                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic">{t(language, 'attachedDocuments')}</h3>
                   </div>
                 </div>
 
@@ -1170,7 +1193,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                     <label htmlFor="file-upload" className="cursor-pointer">
                       <div className="flex items-center gap-2 mb-2">
                         <Upload size={14} className="text-blue-500" />
-                        <span className="text-[10px] font-black text-blue-400 uppercase">Upload New Document</span>
+                        <span className="text-[10px] font-black text-blue-400 uppercase">{t(language, 'uploadNewDocument')}</span>
                       </div>
                       <input
                         id="file-upload"
@@ -1180,7 +1203,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                       />
                       {selectedFile && (
                         <div className="text-[9px] text-emerald-400 mb-2 truncate">
-                          Selected: {selectedFile.name}
+                          {t(language, 'selected')}: {selectedFile.name}
                         </div>
                       )}
                       <button
@@ -1188,7 +1211,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                         disabled={!selectedFile || isUploading}
                         className="w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-[9px] font-black uppercase rounded-lg transition-all"
                       >
-                        {isUploading ? 'Uploading...' : 'Upload File'}
+                        {isUploading ? t(language, 'uploading') : t(language, 'upload')}
                       </button>
                     </label>
                   </div>
@@ -1200,11 +1223,11 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                         <div className="flex items-center gap-2 mb-1">
                           <FileText size={14} className="text-blue-500 flex-shrink-0" />
                           <div className={docsTitleClass}>
-                            {doc.fileName || doc.file_name || doc.documentId || doc.document_id || 'UNNAMED FILE'}
+                            {doc.fileName || doc.file_name || doc.documentId || doc.document_id || t(language, 'unnamedFile')}
                           </div>
                         </div>
                         <div className="text-[10px] text-slate-400 font-mono">
-                          {doc.typeOfDocument || doc.type_of_document || 'Document'}
+                          {doc.typeOfDocument || doc.type_of_document || t(language, 'document')}
                           {doc.date && ` • ${new Date(doc.date).toLocaleDateString()}`}
                         </div>
                         {(doc.locationOfTheStorage || doc.location_of_the_storage) && (
@@ -1217,14 +1240,14 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                         <button
                           onClick={() => handleViewDocument(doc)}
                           className="p-2 bg-blue-600/10 hover:bg-blue-600/20 border border-blue-500/30 rounded-lg transition-all group-hover:border-blue-500"
-                          title="View Document"
+                          title={t(language, 'viewDocument')}
                         >
                           <Eye size={14} className="text-blue-400" />
                         </button>
                         <button
                           onClick={() => handleDownloadDocument(doc)}
                           className="p-2 bg-emerald-600/10 hover:bg-emerald-600/20 border border-emerald-500/30 rounded-lg transition-all group-hover:border-emerald-500"
-                          title="Download Document"
+                          title={t(language, 'download')}
                         >
                           <Download size={14} className="text-emerald-400" />
                         </button>
@@ -1237,7 +1260,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                         className={isLight ? 'text-slate-300 mx-auto mb-2' : 'text-slate-700 mx-auto mb-2'}
                       />
                       <span className="text-[10px] font-black text-slate-700 uppercase italic">
-                        No Documents Attached
+                        {t(language, 'noDocumentsAttached')}
                       </span>
                     </div>
                   )}
@@ -1249,7 +1272,11 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
 
         {/* PARTIES LISTING */}
         <div className="space-y-6 overflow-x-hidden">
-          {[{ label: 'COMPLAINANTS', type: 'Complainant', color: 'emerald' }, { label: 'SUSPECTS', type: 'Suspect', color: 'red' }, { label: 'WITNESSES', type: 'Witness', color: 'blue' }].map(group => {
+          {[
+            { label: t(language, 'complainant'), type: 'Complainant', color: 'emerald' },
+            { label: t(language, 'suspect'), type: 'Suspect', color: 'red' },
+            { label: t(language, 'witness'), type: 'Witness', color: 'blue' },
+          ].map(group => {
             const list = getPartiesByType(group.type);
             return (
               <div key={group.type} className={partyCardClass}>
@@ -1263,7 +1290,7 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                       onClick={() => addNewParty(group.type)}
                       className={partyAddButtonClass}
                     >
-                      + ADD
+                      + {t(language, 'addPerson')}
                     </button>
                   )}
                 </div>
@@ -1287,22 +1314,22 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                               className={partyNameInputClass}
                               value={p.fullName || p.full_name || ''} 
                               onChange={(e) => handlePartyChange(idx, 'fullName', e.target.value)} 
-                              placeholder="Full Name"
+                              placeholder={t(language, 'namePlaceholder')}
                             />
                             <input 
                               className={partyPhoneInputClass}
                               value={p.phoneNumber || p.phone_number || ''} 
                               onChange={(e) => handlePartyChange(idx, 'phoneNumber', e.target.value)} 
-                              placeholder="Contact Number"
+                              placeholder={t(language, 'phonePlaceholder')}
                             />
                           </>
                         ) : (
                           <>
                             <div className={partyNameDisplayClass}>
-                              {p.fullName || p.full_name || 'NOT SPECIFIED'}
+                              {p.fullName || p.full_name || t(language, 'notSpecified')}
                             </div>
                             <div className={partyPhoneDisplayClass}>
-                              {p.phoneNumber || p.phone_number || 'NOT SPECIFIED'}
+                              {p.phoneNumber || p.phone_number || t(language, 'notSpecified')}
                             </div>
                           </>
                         )}
@@ -1311,7 +1338,9 @@ const CaseDetails: React.FC<CaseDetailsProps> = ({
                   }) : (
                     <div className={partiesEmptyClass}>
                        <span className="text-[10px] font-black text-slate-700 uppercase italic">
-                         No {group.label} Registered
+                         {language === 'en'
+                           ? `No ${group.label} Registered`
+                           : `ምንም ${group.label} አልተመዘገበም`}
                        </span>
                     </div>
                   )}

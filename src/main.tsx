@@ -31,8 +31,8 @@ class AppErrorBoundary extends React.Component<
             ? String((err as any).message)
             : String(err);
       return (
-        <div className="min-h-screen bg-[#020617] flex items-center justify-center text-white p-10">
-          <div className="max-w-3xl w-full bg-[#0b1220] border border-slate-800 rounded-2xl p-6">
+        <div className="min-h-screen bg-[color:var(--pcrs-bg)] flex items-center justify-center text-[color:var(--pcrs-text)] p-10">
+          <div className="max-w-3xl w-full bg-[color:var(--pcrs-surface)] border border-[color:var(--pcrs-border)] rounded-2xl p-6">
             <div className="text-xs text-slate-400 tracking-[0.35em] font-black uppercase">
               Application Error
             </div>

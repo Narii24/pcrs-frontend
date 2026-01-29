@@ -3,6 +3,7 @@ import axios from 'axios';
 import keycloak from '../services/keycloak';
 import api from '../services/api';
 import { UserDTO } from '../types';
+import { usePreferencesStore, t } from '../stores/preferencesStore';
 
 const UserManagement = () => {
   const [users, setUsers] = useState<any[]>([]);
@@ -10,6 +11,7 @@ const UserManagement = () => {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [notification, setNotification] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const { language } = usePreferencesStore();
 
   // Form State including Assignment Data
   const [newUser, setNewUser] = useState({
@@ -74,7 +76,7 @@ const UserManagement = () => {
           if (kcError.response && kcError.response.status === 409) {
             console.warn('User already exists in Keycloak, proceeding to DB sync.');
           } else {
-            triggerNotify("KEYCLOAK CREATION FAILED", "error");
+            triggerNotify(t(language, 'keycloakCreationFailed'), "error");
             return;
           }
         }
@@ -95,7 +97,7 @@ const UserManagement = () => {
 
       await api.post('/users', payload);
       
-      triggerNotify("PERSONNEL AUTHORIZED & CASE ASSIGNED", "success");
+      triggerNotify(t(language, 'personnelAuthorizedCaseAssigned'), "success");
       setIsModalOpen(false);
       setNewUser({ username: '', firstName: '', lastName: '', role: 'INVESTIGATOR', password: '', isActive: true, caseId: '' });
       fetchUsers();
@@ -130,10 +132,10 @@ const UserManagement = () => {
       {/* HEADER & SEARCH */}
       <div className="flex justify-between items-center bg-[#11141d] p-6 rounded-3xl border border-white/5">
         <div className="flex items-center gap-6">
-          <h1 className="text-2xl font-black italic uppercase italic">User <span className="text-blue-500">Directory</span></h1>
+          <h1 className="text-2xl font-black italic uppercase italic">{t(language, 'userDirectory')}</h1>
           <input 
             type="text"
-            placeholder="SEARCH BY USER OR CASE ID..."
+            placeholder={t(language, 'searchByUserOrCaseIdPlaceholder')}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="bg-black border border-white/10 rounded-xl px-4 py-2 text-[10px] font-bold w-72 focus:border-blue-500 outline-none uppercase"
@@ -144,44 +146,44 @@ const UserManagement = () => {
           onClick={() => setIsModalOpen(true)}
           className="bg-blue-600 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition-all shadow-lg shadow-blue-900/40"
         >
-          + Add New Personnel
+          {t(language, 'addNewPersonnel')}
         </button>
       </div>
 
       {/* DIRECTORY TABLE */}
       <div className="bg-[#11141d] rounded-[2.5rem] border border-white/10 overflow-hidden shadow-2xl flex-grow">
         <div className="grid grid-cols-5 p-8 bg-black/40 border-b border-white/10 text-[9px] font-black uppercase tracking-widest text-blue-500">
-          <div>Personnel</div>
-          <div>Assigned Case</div>
-          <div>Assignment Date</div>
-          <div>Status</div>
-          <div className="text-right">Actions</div>
+          <div>{t(language, 'personnelLabel')}</div>
+          <div>{t(language, 'assignedCaseLabel')}</div>
+          <div>{t(language, 'assignmentDateLabel')}</div>
+          <div>{t(language, 'statusLabel')}</div>
+          <div className="text-right">{t(language, 'actions')}</div>
         </div>
 
         <div className="overflow-y-auto max-h-[600px] custom-scrollbar">
           {loading ? (
-            <div className="p-20 text-center animate-pulse text-blue-500 font-mono text-[10px] uppercase">Syncing Personnel Database...</div>
+            <div className="p-20 text-center animate-pulse text-blue-500 font-mono text-[10px] uppercase">{t(language, 'syncingPersonnelDatabase')}</div>
           ) : filteredUsers.map((u) => (
             <div key={u.userId} className="grid grid-cols-5 p-8 border-b border-white/5 hover:bg-white/[0.02] items-center">
               <div className="font-black text-slate-200 uppercase">{u.username}</div>
               
               {/* Case ID from Assignment Data */}
-              <div className="text-[11px] font-mono text-blue-400 font-bold">{u.caseId || 'UNASSIGNED'}</div>
+              <div className="text-[11px] font-mono text-blue-400 font-bold">{u.caseId || t(language, 'unassigned')}</div>
               
               {/* Formatted Assigned Date */}
               <div className="text-[10px] text-slate-500 font-bold">
-                {u.assignedDate ? new Date(u.assignedDate).toLocaleDateString() : 'N/A'}
+                {u.assignedDate ? new Date(u.assignedDate).toLocaleDateString() : t(language, 'notSpecified')}
               </div>
 
               <div className="flex items-center gap-2">
                 <span className={`w-1.5 h-1.5 rounded-full ${u.isActive ? 'bg-emerald-500 shadow-[0_0_8px_emerald]' : 'bg-red-500 shadow-[0_0_8px_red]'}`}></span>
                 <span className={`text-[10px] font-black uppercase ${u.isActive ? 'text-emerald-500' : 'text-red-500'}`}>
-                  {u.isActive ? 'Active' : 'Locked'}
+                  {u.isActive ? t(language, 'activeLabel') : t(language, 'lockedLabel')}
                 </span>
               </div>
               
               <div className="flex justify-end gap-3">
-                <button className="text-[9px] font-black uppercase bg-white/5 px-4 py-2 rounded-lg border border-white/5 hover:bg-blue-600 transition-all">Edit</button>
+                <button className="text-[9px] font-black uppercase bg-white/5 px-4 py-2 rounded-lg border border-white/5 hover:bg-blue-600 transition-all">{t(language, 'editLabel')}</button>
               </div>
             </div>
           ))}
@@ -192,19 +194,19 @@ const UserManagement = () => {
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <form onSubmit={handleAddPersonnel} className="bg-[#11141d] p-10 rounded-[3rem] border border-white/10 w-full max-w-lg flex flex-col gap-6">
-            <h2 className="text-2xl font-black uppercase italic text-center">Authorize <span className="text-blue-500">Personnel</span></h2>
+            <h2 className="text-2xl font-black uppercase italic text-center">{t(language, 'authorizePersonnelTitle')}</h2>
             
             <div className="flex flex-col gap-4">
               <div className="grid grid-cols-2 gap-4">
                 <input 
-                  placeholder="FIRST NAME" 
+                  placeholder={t(language, 'firstNamePlaceholder')} 
                   value={newUser.firstName} 
                   onChange={e => setNewUser({...newUser, firstName: e.target.value})} 
                   className="bg-black p-4 rounded-xl border border-white/5 text-xs font-bold focus:border-blue-500 outline-none" 
                   required 
                 />
                 <input 
-                  placeholder="LAST NAME" 
+                  placeholder={t(language, 'lastNamePlaceholder')} 
                   value={newUser.lastName} 
                   onChange={e => setNewUser({...newUser, lastName: e.target.value})} 
                   className="bg-black p-4 rounded-xl border border-white/5 text-xs font-bold focus:border-blue-500 outline-none" 
@@ -212,21 +214,21 @@ const UserManagement = () => {
                 />
               </div>
               <input 
-                placeholder="USERNAME" 
+                placeholder={t(language, 'usernamePlaceholder')} 
                 value={newUser.username} 
                 onChange={e => setNewUser({...newUser, username: e.target.value.toUpperCase()})} 
                 className="bg-black p-4 rounded-xl border border-white/5 text-xs font-bold focus:border-blue-500 outline-none" 
                 required 
               />
               <input 
-                placeholder="CASE ASSIGNMENT (CASE ID)" 
+                placeholder={t(language, 'caseAssignmentCaseIdPlaceholder')} 
                 value={newUser.caseId} 
                 onChange={e => setNewUser({...newUser, caseId: e.target.value.toUpperCase()})} 
                 className="bg-black p-4 rounded-xl border border-white/5 text-xs font-bold focus:border-blue-500 outline-none" 
               />
               <input 
                 type="password"
-                placeholder="SYSTEM PASSWORD" 
+                placeholder={t(language, 'systemPasswordPlaceholder')} 
                 value={newUser.password} 
                 onChange={e => setNewUser({...newUser, password: e.target.value})} 
                 className="bg-black p-4 rounded-xl border border-white/5 text-xs font-bold focus:border-blue-500 outline-none" 
@@ -235,8 +237,8 @@ const UserManagement = () => {
             </div>
 
             <div className="grid grid-cols-2 gap-4 pt-4">
-              <button type="button" onClick={() => setIsModalOpen(false)} className="p-4 rounded-xl text-[10px] font-black uppercase bg-white/5">Abort</button>
-              <button type="submit" className="p-4 rounded-xl text-[10px] font-black uppercase bg-blue-600 shadow-lg shadow-blue-900/40 hover:bg-blue-500">Authorize Access</button>
+              <button type="button" onClick={() => setIsModalOpen(false)} className="p-4 rounded-xl text-[10px] font-black uppercase bg-white/5">{t(language, 'abort')}</button>
+              <button type="submit" className="p-4 rounded-xl text-[10px] font-black uppercase bg-blue-600 shadow-lg shadow-blue-900/40 hover:bg-blue-500">{t(language, 'authorizeAccess')}</button>
             </div>
           </form>
         </div>

@@ -4,6 +4,7 @@ import api from '@/services/api';
 import { useAuthStore } from '@/stores/authStore';
 import { jsPDF } from 'jspdf';
 import CaseDetails from '@/pages/CaseDetails';
+import { usePreferencesStore, t } from '@/stores/preferencesStore';
 
 interface AssignedCase {
   assignmentId: number;
@@ -70,6 +71,9 @@ interface InvestigatorProps {
 
 const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, deletedCases }) => {
   const { userInfo } = useAuthStore() as any;
+  const { language, theme, toggleTheme, setLanguage } = usePreferencesStore();
+  const isLight = theme === 'light';
+  const themeLabel = theme === 'dark' ? t(language, 'brightMode') : t(language, 'darkMode');
 
   const [loading, setLoading] = useState(true);
   const [cases, setCases] = useState<any[]>([]);
@@ -1484,42 +1488,66 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center text-white">
+      <div className={`min-h-screen flex flex-col items-center justify-center ${isLight ? 'bg-slate-50 text-slate-900' : 'bg-[#020617] text-white'}`}>
         <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-        <div className="mt-4 text-[10px] tracking-[0.3em] uppercase text-blue-400 font-black">
-          Syncing Investigator Console
-        </div>
+        <div className="mt-4 text-[10px] tracking-[0.3em] uppercase text-blue-400 font-black">{t(language, 'syncingInvestigatorConsole')}</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#020617] text-white p-10">
+    <div className={`min-h-screen p-10 ${isLight ? 'bg-slate-50 text-slate-900' : 'bg-[#020617] text-white'}`}>
       <div className="max-w-7xl mx-auto flex flex-col gap-8 h-[calc(100vh-80px)]">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
           <div>
             <h1 className="text-4xl md:text-5xl font-black italic uppercase tracking-tight">
-              Investigator <span className="text-blue-500">Console</span>
+              {t(language, 'roleInvestigator')} <span className="text-blue-500">{t(language, 'console')}</span>
             </h1>
             <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.4em] mt-3">
-              Assigned Case Operations • Evidence Management • Field Reports
+              {t(language, 'investigatorSubtitle')}
             </p>
           </div>
-          <div className="bg-[#0f172a] px-6 py-4 rounded-3xl border border-slate-700 flex items-center gap-4">
+          <div className={`px-6 py-4 rounded-3xl border flex items-center gap-4 ${isLight ? 'bg-white border-slate-200' : 'bg-[#0f172a] border-slate-700'}`}>
             <div className="flex flex-col">
               <span className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
-                Signed In As
+                {t(language, 'signedInAs')}
               </span>
               <span className="text-sm font-black">
-                {userInfo?.name || 'Investigator'} ({username})
+                {userInfo?.name || t(language, 'roleInvestigator')} ({username})
               </span>
+            </div>
+            <div className="flex items-center gap-2 ml-2">
+              <span className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
+                {t(language, 'language')}
+              </span>
+              <select
+                value={language}
+                onChange={(e) => setLanguage(e.target.value as any)}
+                className={`h-9 px-3 rounded-2xl border text-[10px] font-black uppercase tracking-[0.25em] outline-none ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-white/5 border-white/10 text-white'
+                }`}
+              >
+                <option value="en">EN</option>
+                <option value="am">AM</option>
+              </select>
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className={`h-9 px-3 rounded-2xl border text-[10px] font-black uppercase tracking-[0.25em] transition-colors ${
+                  isLight
+                    ? 'bg-slate-100 border-slate-200 text-slate-900 hover:bg-slate-200'
+                    : 'bg-white/5 border-white/10 text-white hover:bg-white/10'
+                }`}
+              >
+                {themeLabel}
+              </button>
             </div>
             <button
               type="button"
               onClick={() => useAuthStore.getState().logout()}
               className="ml-2 px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-[0.25em] bg-red-600 hover:bg-red-500 text-white"
             >
-              Logout
+              {t(language, 'logout')}
             </button>
           </div>
         </div>
@@ -1529,21 +1557,23 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
             All Cases: {allCases.length} • Showing: {filteredCasesWithEvidence.length} • Active Assignments: {assignedCasesWithEvidence.length}
           </div>
 
-          <div className="flex items-center bg-white/5 px-4 py-2 rounded-xl border border-white/10 focus-within:border-blue-500/50 transition-all w-full md:w-[420px]">
+          <div className={`flex items-center px-4 py-2 rounded-xl border transition-all w-full md:w-[420px] ${isLight ? 'bg-white border-slate-200 focus-within:border-blue-500/50' : 'bg-white/5 border-white/10 focus-within:border-blue-500/50'}`}>
             <input
               type="text"
-              placeholder="Search cases..."
+              placeholder={t(language, 'searchCasesPlaceholder')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="bg-transparent border-none outline-none text-sm w-full text-white placeholder-white/20 font-bold uppercase tracking-widest"
+              className={`bg-transparent border-none outline-none text-sm w-full font-bold uppercase tracking-widest ${isLight ? 'text-slate-900 placeholder-slate-400' : 'text-white placeholder-white/20'}`}
             />
             {searchQuery ? (
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
-                className="ml-3 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-[0.25em] bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300"
+                className={`ml-3 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-[0.25em] border ${
+                  isLight ? 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700' : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-300'
+                }`}
               >
-                Clear
+                {t(language, 'clear')}
               </button>
             ) : null}
           </div>
@@ -1577,17 +1607,21 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
             return (
               <motion.div
                 key={c.caseId || c.id || Math.random()}
-                className="bg-[#020617] border border-slate-800 rounded-[1.75rem] p-6 shadow-2xl flex flex-col gap-4 relative overflow-hidden"
+                className={`rounded-[1.75rem] p-6 shadow-2xl flex flex-col gap-4 relative overflow-hidden border ${
+                  isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#020617] border-slate-800 text-white'
+                }`}
                 whileHover={{ borderColor: '#3b82f6', translateY: -4 }}
                 transition={{ type: 'spring', stiffness: 220, damping: 18 }}
               >
                 <div className="pointer-events-none absolute inset-x-0 -top-24 h-48 bg-gradient-to-b from-blue-500/10 to-transparent" />
                 <div className="flex justify-between items-start gap-4 relative">
                   <div className="space-y-2">
-                    <span className="inline-flex items-center px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+                      isLight ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                    }`}>
                       {c.caseId || c.id || 'Unknown ID'}
                     </span>
-                    <h2 className="text-2xl font-black uppercase tracking-tight">
+                    <h2 className={`text-2xl font-black uppercase tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                       {c.title || 'Untitled Case'}
                     </h2>
                     <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.3em]">
@@ -1605,7 +1639,11 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                     <select
                       value={statusDraft}
                       onChange={e => handleStatusChange(caseKey, e.target.value)}
-                      className="bg-black/40 border border-blue-500/40 rounded-xl px-3 py-1 text-[10px] font-black uppercase"
+                      className={`rounded-xl px-3 py-1 text-[10px] font-black uppercase border outline-none ${
+                        isLight
+                          ? 'bg-slate-50 border-slate-200 text-slate-900'
+                          : 'bg-black/40 border-blue-500/40 text-white'
+                      }`}
                     >
                       <option value="New">New</option>
                       <option value="In Progress">In Progress</option>
@@ -1626,7 +1664,9 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                   <button
                     type="button"
                     onClick={() => setOpenCaseId(caseDetailsId || caseKey)}
-                    className="px-3 py-1 rounded-xl text-[9px] font-black uppercase bg-white/5 hover:bg-white/10 border border-white/10"
+                    className={`px-3 py-1 rounded-xl text-[9px] font-black uppercase border transition-colors ${
+                      isLight ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-900' : 'bg-white/5 hover:bg-white/10 border-white/10 text-white'
+                    }`}
                   >
                     View Case
                   </button>
@@ -1639,7 +1679,9 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                   </button>
                 </div>
 
-                <div className="mt-4 bg-black/30 rounded-2xl border border-white/5 p-4 space-y-3 relative">
+                <div className={`mt-4 rounded-2xl border p-4 space-y-3 relative ${
+                  isLight ? 'bg-slate-50 border-slate-200' : 'bg-black/30 border-white/5'
+                }`}>
                   <div className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
                     Evidence Log
                   </div>
@@ -1655,12 +1697,16 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                         return (
                           <div
                             key={e.evidenceId}
-                            className="bg-[#020617] border border-slate-700 rounded-xl p-3 space-y-2"
+                            className={`rounded-xl p-3 space-y-2 border ${
+                              isLight ? 'bg-white border-slate-200' : 'bg-[#020617] border-slate-700'
+                            }`}
                           >
                             {isAssignedToMe ? (
                               <>
                                 <input
-                                  className="w-full bg-transparent border-b border-slate-600 text-[11px] font-bold outline-none mb-1"
+                                  className={`w-full bg-transparent border-b text-[11px] font-bold outline-none mb-1 ${
+                                    isLight ? 'border-slate-200 text-slate-900' : 'border-slate-600 text-white'
+                                  }`}
                                   value={draft.type}
                                   onChange={ev =>
                                     handleEditEvidenceChange(
@@ -1671,7 +1717,9 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                                   }
                                 />
                                 <textarea
-                                  className="w-full bg-transparent border border-slate-600 rounded-lg text-[11px] outline-none p-2"
+                                  className={`w-full bg-transparent border rounded-lg text-[11px] outline-none p-2 ${
+                                    isLight ? 'border-slate-200 text-slate-900' : 'border-slate-600 text-white'
+                                  }`}
                                   rows={2}
                                   value={draft.description}
                                   onChange={ev =>
@@ -1695,7 +1743,7 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                                 <div className="text-[11px] font-bold">
                                   {String(e.type || '').trim() || 'Evidence'}
                                 </div>
-                                <div className="text-[11px] text-slate-200 whitespace-pre-wrap break-words">
+                                <div className={`text-[11px] whitespace-pre-wrap break-words ${isLight ? 'text-slate-700' : 'text-slate-200'}`}>
                                   {String(e.description || '').trim() ||
                                     'No description'}
                                 </div>
@@ -1711,12 +1759,14 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                     )}
                   </div>
 
-                  <div className="mt-3 border-t border-slate-700 pt-3 space-y-2">
+                  <div className={`mt-3 border-t pt-3 space-y-2 ${isLight ? 'border-slate-200' : 'border-slate-700'}`}>
                     <div className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
                       Add Evidence
                     </div>
                     <input
-                      className="w-full bg-black/40 border border-slate-600 rounded-lg px-3 py-2 text-[11px] outline-none"
+                      className={`w-full border rounded-lg px-3 py-2 text-[11px] outline-none ${
+                        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-black/40 border-slate-600 text-white'
+                      }`}
                       placeholder="Evidence Type (e.g., Physical, Digital)"
                       value={newEvidenceDrafts[caseKey]?.type || ''}
                       onChange={e =>
@@ -1724,7 +1774,9 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                       }
                     />
                     <textarea
-                      className="w-full bg-black/40 border border-slate-600 rounded-lg px-3 py-2 text-[11px] outline-none"
+                      className={`w-full border rounded-lg px-3 py-2 text-[11px] outline-none ${
+                        isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-black/40 border-slate-600 text-white'
+                      }`}
                       placeholder="Description of the evidence"
                       rows={2}
                       value={newEvidenceDrafts[caseKey]?.description || ''}
@@ -1748,7 +1800,9 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
 
                   {isAssignedToMe ? (
                   <>
-                    <div className="mt-4 bg-black/30 rounded-2xl border border-white/5 p-4 space-y-3 relative">
+                    <div className={`mt-4 rounded-2xl border p-4 space-y-3 relative ${
+                      isLight ? 'bg-slate-50 border-slate-200' : 'bg-black/30 border-white/5'
+                    }`}>
                       <div className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
                         Investigator Log
                       </div>
@@ -1758,13 +1812,15 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                           caseLogs.map((log: any, index: number) => (
                             <div
                               key={`${c.caseId}-${String((log as any).date || '')}-${index}`}
-                              className="bg-[#020617] border border-slate-700 rounded-xl p-3 space-y-1"
+                              className={`rounded-xl p-3 space-y-1 border ${
+                                isLight ? 'bg-white border-slate-200' : 'bg-[#020617] border-slate-700'
+                              }`}
                             >
                               <div className="flex justify-between items-center text-[9px] text-slate-400 font-black uppercase tracking-[0.2em]">
                                 <span>{String((log as any).date || '')}</span>
                                 <span>{String((log as any).investigatorId || '')}</span>
                               </div>
-                              <div className="text-[11px] text-slate-100">
+                              <div className={`text-[11px] ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
                                 {String((log as any).updateDetails || '')}
                               </div>
                             </div>
@@ -1776,12 +1832,14 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                         )}
                       </div>
 
-                      <div className="mt-3 border-t border-slate-700 pt-3 space-y-2">
+                      <div className={`mt-3 border-t pt-3 space-y-2 ${isLight ? 'border-slate-200' : 'border-slate-700'}`}>
                         <div className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
                           Add Update
                         </div>
                         <textarea
-                          className="w-full bg-black/40 border border-slate-600 rounded-lg px-3 py-2 text-[11px] outline-none"
+                          className={`w-full border rounded-lg px-3 py-2 text-[11px] outline-none ${
+                            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-black/40 border-slate-600 text-white'
+                          }`}
                           placeholder="Investigator update details"
                           rows={2}
                           value={newLogDrafts[caseKey] || ''}
@@ -1802,7 +1860,9 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                       </div>
                     </div>
 
-                    <div className="mt-4 bg-black/30 rounded-2xl border border-white/5 p-4 space-y-3 relative">
+                    <div className={`mt-4 rounded-2xl border p-4 space-y-3 relative ${
+                      isLight ? 'bg-slate-50 border-slate-200' : 'bg-black/30 border-white/5'
+                    }`}>
                       <div className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
                         Case Documents
                       </div>
@@ -1812,10 +1872,12 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                           c.documents.map((doc: any) => (
                             <div
                               key={doc.documentId || doc.document_id}
-                              className="p-3 rounded-2xl bg-black/40 border border-white/5 flex items-center justify-between"
+                              className={`p-3 rounded-2xl border flex items-center justify-between ${
+                                isLight ? 'bg-white border-slate-200' : 'bg-black/40 border-white/5'
+                              }`}
                             >
                               <div className="flex-1 min-w-0 pr-2">
-                                <div className="text-[11px] font-bold truncate">
+                                <div className={`text-[11px] font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
                                   {doc.fileName ||
                                     doc.file_name ||
                                     doc.documentId ||
@@ -1853,7 +1915,7 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
                         )}
                       </div>
 
-                      <div className="mt-3 border-t border-slate-700 pt-3 space-y-2">
+                      <div className={`mt-3 border-t pt-3 space-y-2 ${isLight ? 'border-slate-200' : 'border-slate-700'}`}>
                         <div className="text-[9px] text-slate-500 font-black uppercase tracking-[0.3em]">
                           Upload Document
                         </div>
@@ -1907,7 +1969,7 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
               <CaseDetails
                 caseId={openCaseId}
                 embedded
-                theme="dark"
+                theme={isLight ? 'light' : 'dark'}
                 onClose={() => setOpenCaseId(null)}
                 onCaseUpdated={() => {
                   loadData();
@@ -1920,7 +1982,7 @@ const Investigator: React.FC<InvestigatorProps> = ({ onRefresh, refreshTrigger, 
               onClick={() => setOpenCaseId(null)}
               className="absolute top-6 right-6 px-4 py-2 rounded-full text-[10px] font-black uppercase bg-red-600 hover:bg-red-500"
             >
-              Close
+              {t(language, 'close')}
             </button>
           </motion.div>
         )}
