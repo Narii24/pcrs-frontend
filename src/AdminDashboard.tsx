@@ -14,7 +14,6 @@ import {
   ClipboardList,
 } from 'lucide-react';
 import api from '@/services/api';
-import { listUsers } from '@/services/User';
 import CaseDetails from '@/pages/CaseDetails';
 import { useAuthStore } from '@/stores/authStore';
 import { usePreferencesStore, t } from '@/stores/preferencesStore';
@@ -37,7 +36,6 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
   const [activeFilter, setActiveFilter] = useState<'all' | 'new' | 'progress' | 'closed'>('all');
   const [users, setUsers] = useState<any[]>([]);
   const [keycloakUsers, setKeycloakUsers] = useState<any[]>([]);
-  const [showKeycloakUsers, setShowKeycloakUsers] = useState(false);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [detailMode, setDetailMode] = useState<'view' | 'edit' | null>(null);
@@ -170,6 +168,12 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== 'users') return;
+    if (keycloakUsers.length > 0) return;
+    fetchKeycloakUsers();
+  }, [activeSection, keycloakUsers.length]);
 
   // Build userById map like Supervisor.tsx
   const userById = useMemo(() => {
@@ -915,40 +919,11 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                   <div className={`p-6 border-b flex items-center justify-between ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
                     <div>
                       <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                        {showKeycloakUsers ? 'Keycloak Users' : 'System Users'}
+                        {t(language, 'users')}
                       </h3>
                       <p className={`text-[11px] mt-1 ${isLight ? 'text-slate-500' : 'text-slate-300'}`}>
-                        {showKeycloakUsers ? keycloakUsers.length : users.length} records
+                        {keycloakUsers.length} records
                       </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowKeycloakUsers(false)}
-                        className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
-                          !showKeycloakUsers
-                            ? 'bg-blue-600 text-white'
-                            : isLight ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-white/10 text-slate-200 hover:bg-white/15'
-                        }`}
-                      >
-                         Users
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowKeycloakUsers(true);
-                          if (keycloakUsers.length === 0) {
-                            fetchKeycloakUsers();
-                          }
-                        }}
-                        className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
-                          showKeycloakUsers
-                            ? 'bg-blue-600 text-white'
-                            : isLight ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-white/10 text-slate-200 hover:bg-white/15'
-                        }`}
-                      >
-                        Users
-                      </button>
                     </div>
                   </div>
                   <div className="overflow-x-auto">
@@ -962,9 +937,9 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                         </tr>
                       </thead>
                       <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-white/10'}>
-                        {(showKeycloakUsers ? keycloakUsers : users).map((user: any) => {
+                        {keycloakUsers.map((user: any) => {
                           const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
-                          const isActive = showKeycloakUsers ? user.enabled : user.isActive;
+                          const isActive = user.enabled;
                           const activeClass = isActive
                             ? isLight
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -975,7 +950,7 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                           const activeLabel = isActive ? 'Active' : 'Inactive';
                           
                           return (
-                            <tr key={user.userId || user.username || user.id} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'}>
+                            <tr key={user.id || user.username} className={isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'}>
                               <td className="px-6 py-4">
                                 <div className={`font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>{user.username}</div>
                               </td>
@@ -995,10 +970,10 @@ const AdminDashboard: React.FC<AdminProps> = ({ cases = [], setCases, onRefresh,
                             </tr>
                           );
                         })}
-                        {(showKeycloakUsers ? keycloakUsers : users).length === 0 && (
+                        {keycloakUsers.length === 0 && (
                           <tr>
                             <td colSpan={4} className="px-6 py-10 text-center text-[11px] text-slate-400 font-semibold uppercase">
-                              {showKeycloakUsers ? 'No Keycloak users found.' : 'No users found.'}
+                              No users found.
                             </td>
                           </tr>
                         )}
